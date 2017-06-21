@@ -1,0 +1,3324 @@
+--[[
+        Additional settings definition file - accessed by selecting 'Edit Advanced Settings' from drop-down in plugin manager (preset manager section).
+        
+        *** Reminder: reload plugin after editing this file - for changes to take effect.
+            
+        *** Important: when editing, take care to assure punctuation and syntax are not disturbed. In comments, it doesn't matter, but in the rest - every character is potentially meaningful,
+                       including spaces, commas, brackets, dots, underscores...
+                       
+        There are 2 kinds of comments:
+        1. single line
+        2. multi-line (like this one).
+        
+        lines beginning with '--' (without the apostrophes) are single line comments.
+        lines beginning with '- - [ [' (without the spaces) begin multi-line comments, which end with '- - ] ]' (without the spaces).
+
+        
+        Speaking of quotes and apostrophe's: they're equivalent - they both delimit text strings (but you can nest double-quotes within apostrophe-delimited strings and vice versa,
+        without escaping, examples:
+        local mystring = 'This is a "string"' -- ok
+        local mystring = "This is a 'string'" -- ok
+        local mystring = 'This is a 'string'' -- not ok
+        local mystring = "This is a "string"" -- not ok
+        local mystring = 'This is a \'string\'' -- ok (apostrophes have been "escaped" via backslash character)
+        local mystring = "This is a \"string\"" -- ok (double-quotes are escaped)
+
+        
+        Definitions:
+        
+        * Comment-out: to prepend '--' to a non-comment line making it a comment, or to wrap one or more non-comment lines with '- - [ [' & '- - ] ]'. This turns non-comment lines into comments, rendering them null & void for all practical purposes.
+        * Un-comment: to remove the '--' at the front of a comment line thus enabling it to take effect (or removing '- - [ [' & '- - ] ]' wrappage).
+        
+        
+        This configuration file is interpreted in the context of the Elare Plugin Framework - most Lr namespaces are available, and all standard Elare interface objects are available, including:
+        
+        String/text formatting:
+        * str:fmtx - a derivative of Lightroom's LOC function - same syntax for specifying placeholders in the format string..., e.g.
+            str:fmtx( "Hello ^1^2", "World", "!!!" ) -- will create the string: "Hello World!!!".
+          string.format 'C' string formatting function, e.g.
+            string.format( "%u times", count ) -- outputs "5 times", if count is 5.
+        Debugging (ignored if advanced debugging is not enabled) :
+        * Debug.lognpp - log any number of parameters in a "pretty" format, e.g.
+            Debug.lognpp( "before", devSets, "after", photo:getDevelopSettings() ) -- log before and after develop settings.
+        * Debug.pause and Debug.pauseIf - shows values of variables, if any, and presents options to keep going or stop, e.g.
+            Debug.pause( myvar ) -- stop execution temporarily, and show the value of myvar variable.
+            Debug.pause() -- show nothing, but confirm execution has reached this point.
+        Logging to plugin log file:
+        * app:log and app:logv log file methods (LOC compatible formatting), e.g.
+            app:log( "Here it is: ^1", it ) -- log it
+            app:logv( "hmm..." ) -- log hmm... - included in log file only if verbose logging is enabled.
+            
+        and MANY more, but the luadoc is out of date - see source code itself, or examples here-in, for reference.
+          
+        Reference documentation can be obtained by reading the API doc, downloadable as part of the Lightroom SDK, from here:
+        
+        http://www.adobe.com/devnet/photoshoplightroom.html
+        
+        Get lua language documentation from www.lua.org
+--]]
+
+-- declare return table
+-- (don't change this)
+local _t = {}
+
+
+local dbg, dbgf = Object.getDebugFunction( 'Import' ) -- debug logging functions, ineffective unless 'Import' class is enabled in advanced debug section of plugin manager.
+local lrVerNum -- Lr version number, for compatibility checks...
+
+
+--[[   R E A D   T H I S :
+       - - - - - - - - - -
+
+       *** You will *not* have to change most of the stuff in this file.
+       -----------------------------------------------------------------
+       
+       What you are most likely to want to change is custom folder/file-naming specs.
+       What you are most likely to want to change is custom folder/file-naming specs.
+       What you are most likely to want to change is custom folder/file-naming specs.
+       
+       So, consider skipping directly to them now by doing a text search for:
+       
+            nameSpec_custom
+       
+       Note: if you want to create custom tokens for folder/file-naming, then you will also need to edit:
+       
+            initFile_custom
+            
+       In general, you can do a search for
+       
+            _custom
+            
+       to find various things ripe for additional customization.
+       
+       Of course, advanced users can copy/paste/edit stuff to their hearts content - there is a fair amount of error/consistency checking to help correct mistakes.
+       Much can be done by example/trial-error, just remember to pay close attention to syntax/punctuation.
+       And remember: I may be able to help if need be.
+       
+       PS - if you want to transcode videos upon import, search for 'transcoder' in this file (without the apostrophes).
+       
+       tip: use 'Sample Metadata' button in plugin manager to see sample of file exif metadata ID's and Lr catalog metadata "keys".
+       
+       - - - - - - - - - -
+--]]
+
+
+
+local tokens -- forward reference: initialized in token support code further down.
+
+
+--   D U P L I C A T E   D E T E C T I O N   S U P P O R T
+
+
+-- filename comparison functions - these can be assigned to the various permutations comparing import filename(s) to catalog filename(s).
+
+local function isEqual( fn1, fn2 )
+    return fn1 == fn2
+end
+
+local function isEqualIgnoringCase( fn1, fn2 )
+    return str:isEqualIgnoringCase( fn1, fn2 )
+end
+
+local function isOneSubstringOfTwo( fn1, fn2 )
+    return fn2:find( fn1, 1, true )
+end
+
+local function isTwoSubstringOfOne( fn1, fn2 )
+    return fn1:find( fn2, 1, true )
+end
+
+local function isEitherSubstringOfOther( fn1, fn2 )
+    return isOneSubstringOfTwo( fn1, fn2 ) or isTwoSubstringOfOne( fn1, fn2 )
+end
+
+local function isOneSubstringOfTwoIgnoringCase( fn1, fn2 )
+    return isOneSubstringOfTwo( LrStringUtils.lower( fn1 ), LrStringUtils.lower( fn2 ) )
+end
+
+local function isTwoSubstringOfOneIgnoringCase( fn1, fn2 )
+    return isTwoSubstringOfOne( LrStringUtils.lower( fn1 ), LrStringUtils.lower( fn2 ) )
+end
+
+local function isEitherSubstringOfOtherIgnoringCase( fn1, fn2 )
+    local fn1L = LrStringUtils.lower( fn1 )
+    local fn2L = LrStringUtils.lower( fn2 )
+    return isOneSubstringOfTwo( fn1L, fn2L ) or isTwoSubstringOfOne( fn1L, fn2L )
+end
+
+
+--   These variables (settings) are available to support additional import criteria evaluation (e.g. duplicate detection..):
+----------------------------------------------------------------------------------------------------------------------------
+local acceptModelAsCameraId = false         -- (default is false) if serial number isn't present, do you want camera model to be considered as uniquely identifying the camera? (if so, set this to true).
+                                            -- it should be safe to set this to true if you only care whether duplicates are properly detected for model corresponding to import. In other words,
+                                            -- if you have a few Oly.C3030Z photos from somebody elses camera, but you are only importing photos from your C3030Z camera, then it would be good to set this to true (since C3030Z does not support serial number metadata), since you wouldn't want one not to be imported due to seeming like a duplicate of a photo from another person's camera.
+                                            -- To be clear: more often than not, if you are importing photos from only one camera of a given model, it will probably be better to set this to true if said model does not support serial number in exif metadata.
+                                            -- to clarify further: if you are importing from two cameras of the same model, then you probably still want to set this true if serial number not supported, *if* they support sub-second time (and cameras are not hardware synchronized). If said cameras do not support subsecond time nor serial number, then only set this to true if you are certain 2 shots won't be taken in the same second (e.g. same person switching cameras).
+                                            -- in all other cases, it is best if this be set to false. To re-iterate - if the photos being imported have serial number, this setting doesn't matter.
+
+local filenameEnable = true                 -- (default is true) enable filename checking.
+
+-- these are ignored unless filenameEnable is true (see above for "is" comparison functions):
+-- set equal to nil to exclude consideration, for example:
+-- compareImportBeforeRenamingToCurrentCatalogName = nil -- do not compare importing filename prior to rename against current catalog name.
+local compareImportBeforeRenamingToOriginalCatalogName = isEqual -- (default is 'isEqual' sans apostrophes, see functions above for other possibilities)
+local compareImportAfterRenamingToOriginalCatalogName = isEqual -- (default is 'isEqual' sans apostrophes, see functions above for other possibilities)
+local compareImportBeforeRenamingToCurrentCatalogName = isEqual -- (default is 'isEqual' sans apostrophes, see functions above for other possibilities)
+local compareImportAfterRenamingToCurrentCatalogName = isEqual -- (default is 'isEqual' sans apostrophes, see functions above for other possibilities)
+
+local fileCreationEnable = false            -- (default is false) enable check for file creation time - this should be enabled as a last resort, when you know creation time of duplicate files will be same and duplicates are not otherwise being reliably detected.
+
+local fileModificationEnable = false        -- (default is false) enable check for file modification time - this should be enabled as a last resort, when you know modification time of duplicate files will be same and duplicates are not otherwise being reliably detected.
+
+local fileSizeEnable = false                -- (default is false) enable check for file size - this should be enabled as a last resort, when you know file-size of duplicate files will be same and duplicates are not otherwise being reliably detected.
+-----------------------------------------------------------------------------------------------------------------------------
+
+-- other things which support import criteria evaluation:
+
+-- note: it is implied that if metadata is present for one but absent in the other, it's not a duplicate.
+-- if not present in both, or present and matches, then it's inconclusive and other settings will determine.
+-- if present in both, but does not match, then it's not a duplicate.
+-- this is done before most other checks, since it's a quick way to weed out those that aren't in the running..
+-- note: no point putting camera model, serial number, capture time, or image numbers in here, since those are handled specially.
+-- comparison functions take import value (string) & candidate value (type varies) as parameters and return a boolean true if equal, false if unequal, nil and and error message if indeterminate.
+-- only called when both values are "non-nil" (present). if compare function is omitted (or set to nil), comparison will be simple test for string equality.
+
+
+-- note: import format includes decimal number suffix, candidate when *raw* is number only.
+-- 150.0 mm | 150 mm
+-- I'm assuming this format is standard and consistent - if you find a variant, do tell (and fix here).
+local function compareFocalLength( imp, cand )
+    local impNum = tonumber( imp:sub( 1, -3 ) ) -- remove ' mm' and convert string to number.
+    if impNum ~= nil then
+        -- return ( ""..impNum.." mm" ) == cand - if cand formatted
+        return impNum == cand -- valid if cand is raw.
+    else
+        return nil, "unable to parse import focal length number"
+    end
+end
+
+-- compare import lens metadata against Lr *formatted*, e.g.
+-- "150-500mm f/5-6.3" | "18.0-200.0 mm f/3.5-5.6"
+-- I'm assuming this format is standard and consistent - if you find a variant which is not being parsed properly, do tell (and fix here).
+local function compareLens( imp, cand )
+    local impComp = str:split( imp, " " )
+    local candComp = str:split( cand, " " )
+    if #impComp == 2 then
+        if #candComp == 3 then -- not candidate has an additional .0
+        
+            -- 1st max aperture
+            local impApComp = str:split( impComp[2], "/" )    
+            local candApComp = str:split( candComp[3], "/" )
+            if #impApComp ~= 2 or #candApComp ~= 2 then return nil, "unrecognized aperture format in lens info" end
+            Debug.pauseIf( impApComp[1] ~= "f" or candApComp[1] ~= "f" )
+
+            local impAp = str:split( impApComp[2], "-" )
+            local candAp = str:split( candApComp[2], "-" )
+            if #impAp == 2 and #candAp == 2 then -- zoom
+                --Debug.pause( impAp[1], impAp[2], candAp[1], candAp[2] )
+                local impStart = tonumber( impAp[1] )
+                local impStop = tonumber( impAp[2] )
+                if not impStart or not impStop then return nil, "unable to parse start and stop length from exif lens focal length" end
+                local candStart = tonumber( candAp[1] )
+                local candStop = tonumber( candAp[2] )
+                if not candStart or not candStop then return nil, "unable to parse start and stop length from catalog lens focal length" end
+                --Debug.pause( impStart, impStop, candStart, candStop )
+                -- local m = num:isWithin( impStart, candStart, .000001 ) and num:isWithin( impStop, candStop, .000001 )
+                local match = impStart == candStart and impStop == candStop -- should be exact.
+                if not match then return false end
+            elseif #impAp == 1 and #candAp == 1 then -- prime
+                --Debug.pause( impAp[1], candAp[1] )
+                local impVal = tonumber( impAp[1] )
+                if not impVal then return nil, "unable to parse focal length from exif lens info" end
+                local candVal = tonumber( candAp[1]:sub( 1, -3 ) )
+                if not candVal then return nil, "unable to parse focal length from catalog lens info" end
+                --Debug.pause( impVal, candVal )
+                -- local m = num:isWithin( impVal, candVal, .000001 )
+                local match = impVal == candVal -- should be exact.
+                if not match then return false end
+            else
+                --Debug.pause( #impAp, #candAp )
+                return false -- presumably ones a prime and the other a zoom.
+            end
+            
+            -- 2nd: focal length
+            local impFoc = str:split( impComp[1], "-" )
+            local candFoc = str:split( candComp[1], "-" )
+            if #impFoc == 2 and #candFoc == 2 then -- zoom
+                --Debug.pause( impFoc[1], candFoc[1], impFoc[2], candFoc[2] )
+                local impStart = tonumber( impFoc[1] )
+                local impStop
+                if impFoc[2]:sub( -2 ) == 'mm' then
+                    impStop = tonumber( impFoc[2]:sub( 1, -3 ) )
+                else
+                    impStop = tonumber( impFoc[2] )
+                end
+                if not impStart or not impStop then return nil, "unable to parse start and stop length from exif lens focal length" end
+                local candStart = tonumber( candFoc[1] )
+                local candStop
+                if candFoc[2]:sub( -3 ) == ' mm' then
+                    candStop = tonumber( candFoc[2]:sub( 1, -4 ) )
+                else
+                    candStop = tonumber( candFoc[2] )
+                end
+                if not candStart or not candStop then return nil, "unable to parse start and stop length from catalog lens focal length" end
+                --Debug.pause( impStart, impStop, candStart, candStop )
+                return candStart == impStart and candStop == impStop
+            elseif #impFoc == 1 and #candFoc == 1 then -- prime
+                --Debug.pause( impFoc[1], candFoc[1] )
+                if impFoc[1]:sub( -2 ) == 'mm' then
+                    impVal = tonumber( impFoc[1]:sub( 1, -3 ) )
+                else
+                    impVal = tonumber( impFoc[1] )
+                end
+                if not impVal then return nil, "unable to parse focal length from exif lens info" end
+                if candFoc[1]:sub( -2 ) == 'mm' then
+                    candVal = tonumber( candFoc[1]:sub( 1, -3 ) )
+                else
+                    candVal = tonumber( candFoc[1] )
+                end
+                if not candVal then return nil, "unable to parse focal length from catalog lens info" end
+                --Debug.pause( impVal, candVal )
+                return impVal == candVal
+            else
+                --Debug.pause( #impFoc, #candFoc )
+                return false -- presumably ones a fixed focal length and another a zoom.
+            end
+        else
+            Debug.pause( #candComp )
+            return nil, "unrecognized catalog lens format"
+        end
+    else
+        Debug.pause( #impComp )
+        return nil, "unrecognized exif lens format"
+    end
+    error( "how here?" )
+end
+
+-- compare import shutter speed (string in fraction notation) against *raw* catalog metadata (numeric).
+-- it seems standard exif shutter-speed format is "n/m" seconds. If you encounter another format - do tell.
+local function compareShutterSpeed( imp, cand )
+    --Debug.pause( imp, cand )
+    local slash = imp:find( "/" )
+    if slash then
+        local numerator = tonumber( imp:sub( 1, slash - 1 ) )
+        local denominator = tonumber( imp:sub( slash + 1 ) )
+        if numerator and denominator then
+            local v = numerator / denominator
+            local m = num:isWithin( v, cand, .000001 ) -- not always exact - within a microsecond is close enough.
+            --Debug.pauseIf( m )
+            return m
+        else
+            Debug.pause( "no-parse" )
+            return nil, "unable to parse numerator and/or denominator from import metadata"
+        end
+    else
+        Debug.pause( "bad fmt" )
+        return nil, "import metadata has invalid format"
+    end
+end
+
+-- compare import "numeric" string against *raw* catalog metadata (numeric).
+-- import format - decimal number as string; candidate format is actual number - examples:
+-- Aperture: "5.6" | 5.6
+-- ISO: "1250" | 1250
+local function compareNumber( imp, cand )
+    local impNum = tonumber( imp )
+    return impNum == cand
+end
+
+
+-- reminder: metadata is only compared if model matches (or isn't available), and dto/image-number checks weren't definitive.
+-- reminder #2: if incoming has dto (lo-rez), then this info is only used to resolve ambiguity when multiple photos from camera have same dto timestamp.
+-- table of metadata to compare. note: import metadata comes from exif, candidate metadata comes from catalog (types: 'raw' & 'fmt').
+-- title can be anything you like, but exif 'id' & catalog metadata 'key' must be exact as supported - use plugin manager 'Sample Metadata' button for detailed example data.
+-- format functions are defined above, and you can define more - the objective is to format one, the other, or both so data can be compared for equality.
+-- tip: 1st ones should be best combination of speed and most likely to weed out non-matches.
+-- finally: these precede filename check to weed out non-starters.
+local compareMetadataDefs = { -- Maybe I should do like for dto: assemble a subset which has a certain focal length, ditto for the others..
+-- on the other hand, as long as I cache all the results, it should go quicker n' quicker - hmm.. Also, this logic *only* kicks in when importing files which have no dto.
+-- or if dto inconclusive, then number of photos subject to comparison will be small.
+    { title="Focal Length", import={ id='FocalLength' }, candidate={ type='raw', key='focalLength' }, compare=compareFocalLength },
+    { title="ISO", import={ id='ISO' }, candidate={ type='raw', key='isoSpeedRating' }, compare=compareNumber },
+    { title="Shutter Speed", import={ id='ShutterSpeed' }, candidate={ type='raw', key='shutterSpeed' }, compare=compareShutterSpeed },
+    { title="Aperture", import={ id='Aperture' }, candidate={ type='raw', key='aperture' }, compare=compareNumber },
+    { title="Lens", import={ id='Lens' }, candidate={ type='fmt', key='lens' }, compare=compareLens },
+}
+
+
+
+--  I M P O R T   C R I T E R I A   F U N C T I O N ( S )
+
+
+-- reminder: use 'Sample Metadata' button in plugin manager to see sample of file exif metadata ID's and Lr catalog metadata (types and) "keys".
+
+
+--[[
+        Customizable import criteria function - if unmodified, it implements "standard" (default) duplicate file detection - see options above.
+        
+        Note: called after init-file has been called, but "of course" (since not yet approved for import) init-photo has not been called.
+        
+        ###3 could have an option to re-init dto-table (& fn-set) since no guarantee all imports have been via OI - notes are on web page now.
+        
+        Although this function (like all functions in here) is customizable, it's more complex than most of the others, so take care if you do..
+        
+        return true if subject photo passes scrutiny (e.g. not a duplicate).
+        return false, errm if not.
+--]]
+local function importCriteria_custom( params )
+    assert( Import.allPhotoRecs, "All photo recs table needs to be initialized." )
+    assert( Import.dtoTable, "DTO table needs to be initialized." )
+    local origFile = params.origFile or error( "no orig file" )
+    local newFile = params.newFile or error( "no new file" )
+    local origExt = params.origExt or error( "no orig ext" )
+    local newExt = params.newExt or error( "no new ext" )
+    local origFilename = params.origFilename or error( "no orig filename" )
+    local newFilename = params.newFilename or error( "no new filename" )
+    local spec = params.spec or error( "no spec" )
+    local call = spec.call or error( "no call" )
+    local settings = spec.settings or error( "no settings" )
+    local import = spec.import or error( "no import" )
+    local ets = import.ets or error( "'Exiftool Session' is required." ) -- kinda harshy, but such is enabled by default, and used for most folder/file-naming support.
+    local exif = tokens['exif'] or error( "No exif tokens initialized." ) -- again - this is normally done..
+    local candRecs = {} -- indexed by photo, record contains dto, fn, sn, model, ... (check init code in ExtendedBackground.lua module for complete details).
+    local isSn
+    local isModel
+    local camId = exif['SerialNumber']
+    if not str:is( camId ) then
+        if acceptModelAsCameraId then
+            camId = exif['Model']
+            if str:is( camId ) then
+                isModel = true
+            else
+                camId = nil
+            end
+        else
+            camId = nil
+        end
+    else
+        isSn = true
+    end
+    
+    -- the criteria check functions below return true if importable, else false & error message if non-importable, or nil (with candRecs for next function) if importability not certain yet (in all but last function).
+    -- hint: if attributes of incoming differ definitively from candidate, just break from the repeat loop (goto check next candidate).
+    -- also: if attributes of incoming match definitively those of candidate, return false, "matching attributes..".
+    -- if attributes are inconclusive at this stage, then save candidate record for photo in candRecs table and break.. - will be revisited in next stage, if nothing conclusive before then.
+    -- exception: last criteria check function must make the executive decision (return true or false - candidates to be ignored).
+    -- PS - dto is short-hand for capture-date/time.
+    
+    -- Try using camera ID & dto (with special handling for dto-lo vs. hi).
+    local function cameraIdAndDto()
+        local newRecs = {}
+        local dtoLo
+        local dtoString = exif['DateTimeOriginal'] -- low-rez DTO (string)
+        local dtoStruct, oops = exifTool:parseDateTime( dtoString ) -- ditto parsed to components
+        if dtoStruct then -- parsing was successful
+            dtoLo = LrDate.timeFromComponents( dtoStruct.year, dtoStruct.month, dtoStruct.day, dtoStruct.hour, dtoStruct.minute, dtoStruct.second ) -- convert to binary (relative to epoch..).
+        end
+        if dtoLo then
+            local dtoRecs = Import.dtoTable[dtoLo] -- get records for all photos with same dto-lo (usually only one, but could be multiples from a burst).
+            if dtoRecs then
+                local dtoHi = exif['SubSecDateTimeOriginal'] -- hi-rez DTO
+                if dtoHi then
+                    for candPhoto, candRec in pairs( dtoRecs ) do
+                        repeat
+                            
+                            local candFile = candRec.path or candPhoto:getRawMetadata( 'path' ) -- path is always in cand-rec - just paranoid I guess.
+                            local candFilename = candRec.fn or error( "no fn" )
+                            local candExt = LrPathUtils.extension( candFile ) -- this can't be changed after import.
+                            
+                            if str:isEqualIgnoringCase( origExt, newExt ) then -- file is not being converted to dng
+                                if not str:isEqualIgnoringCase( origExt, candExt ) then -- incoming extension is different than candidate.
+                                    break -- prospective candidate can not possibly be a duplicate if different extension
+                                -- else preform the normal checks below
+                                end
+                            else -- original is being converted to different format, e.g. dng.
+                                if not str:isEqualIgnoringCase( origExt, candExt ) and not str:isEqualIgnoringCase( newExt, candExt ) then -- incoming extension different than raw or converted dng.
+                                    break -- prospective candidate can not possibly be a duplicate if different than propietary raw and not dng.
+                                end
+                            end
+                            
+                            -- fall-through => incoming extension matches candidate, or if incoming being converted to dng, candidate is also dng.
+                        
+                            --[[ this for test purposes only:
+                            if "###-one" then
+                                newRecs[candPhoto] = candRec
+                                break
+                            end
+                            --]]
+                            
+                            local candCamId
+                            if isSn then
+                                candCamId = candRec.sn
+                            elseif isModel then
+                                candCamId = candRec.model
+                            -- else nil
+                            end
+                            if camId and not candCamId or not camId and candCamId then
+                                break -- prospective condidate is not a duplicate, since any true duplicate would have camId if source has camId, or not if not..
+                            elseif camId and ( camId == candCamId ) then -- they're present and equal
+                                -- proceed (unlike case when only dto is a match, dto-hi matching is conclusive.
+                            else -- not present or not equal
+                                if camId then -- present but not equal
+                                    -- can't be duplicate, since camera ID if present would be the same for all duplicates.
+                                else -- both are not present
+                                    newRecs[candPhoto] = candRec -- consider additional criteria.
+                                end
+                                break -- without camera identification, capture time is not conclusive (note: it may be a good indicator in some cases, but not dependable..).
+                                -- not usually a problem though - typically, if sub-sec metadata is present, so is camera ID.
+                            end
+                            
+                            -- sn or model is present and they are equal.
+                            if candRec.dtoHi == nil then -- not yet computed (even if value computed is nil, it will be set to empty string to indicate).
+                            
+                                -- this logic required since correct file must be available for exiftool'ing the dto
+                                if not catalog:findPhotoByUuid( candRec.uuid ) then -- photo has been removed from catalog.
+                                    app:logV( "Candidate is no longer in catalog - being removed from consideration as well.. (last known as: ^1", candFile )
+                                    Import.allPhotoRecs[candPhoto] = nil -- note: photo no longer in catalog can never return with same uuid, so no need to init on session basis.
+                                    dtoRecs[candPhoto] = nil
+                                    break -- consider this candidate no further - proceed to next candidate.
+                                elseif not fso:existsAsFile( candFile ) then -- either has been moved in Lightroom, or source file has been deleted from disk outside Lightroom.
+                                    local file = candFile
+                                    candFile = candPhoto:getRawMetadata( 'path' ) -- get (potentially) changed path.
+                                    candRec.path = candFile
+                                    candFilename = LrPathUtils.leafName( candFile )
+                                    candRec.fn = candFilename
+                                    if fso:existsAsFile( candFile ) then
+                                        app:logV( "Candidate seems to have moved from '^1' to '^2'", file, candFile )
+                                    else
+                                        app:logV( "Candidate is offline: ^1 - check via date-time-original (hi-rez) is being aborted.", candFile, file )
+                                        newRecs[candPhoto] = candRec
+                                        break
+                                    end
+                                end
+                            
+                                ets:addArg( '-S' )
+                                ets:addArg( '-SubSecDateTimeOriginal' )
+                                ets:setTarget( candFile )
+                                local rslt, errm = ets:execute()
+                                if str:is( rslt ) then
+                                    if not str:is( errm ) then
+                                        candRec.dtoHi = exifTool:parseOneShortValue( rslt, 'SubSecDateTimeOriginal' ) or ""
+                                        --Debug.pause( candRec.dtoHi, rslt )
+                                        if candRec.dtoHi == "" then
+                                            app:logW( "Unable to parse dto-hi from candidate photo exif - dup.detector will try other means.." )
+                                            newRecs[candPhoto] = candRec
+                                            break
+                                        -- else proceed to test below.
+                                        end
+                                    else -- error obtaining dto-hi - all bets are off..
+                                        -- value stays nil - we'll try again if there's a next time through.
+                                        app:logW( errm )
+                                        newRecs[candPhoto] = candRec
+                                        break
+                                    end
+                                else -- no result
+                                    if not str:is( errm ) then -- no error - metadata is just not there
+                                        candRec.dtoHi = ""
+                                        -- prospective candidate can't possibly be a duplicate: incoming has dto-hi and prospective doesn't
+                                        break
+                                    else -- error
+                                        -- leave value at nil - perhaps there won't be an error next time.
+                                        app:logW( errm ) -- else just not present in exif.
+                                        newRecs[candPhoto] = candRec
+                                        break
+                                    end
+                                end
+                            -- else already init previously (and doesn't matter if file relocated..).
+                            end
+                            -- reminder camera ID's are present and match - that was pre-checked above.
+                            if str:is( candRec.dtoHi ) then -- value has been computed, and was present..
+                                if candRec.dtoHi == dtoHi then -- same camera, same time exactly (and equivalent extension).
+                                    return false, str:fmtx( "duplicate - same serial number and hi-rez timestamp as '^1'.", candFile ) -- don't import.
+                                -- else different camId or different dto-hi - not a dup.
+                                end
+                            else -- incoming has dto-hi, prospective candidate does not - not a dup.
+                                Debug.pause( "?", newRecs[candPhoto] )
+                                --newRecs[candPhoto] = candRec -- probably redundent, but cheap insurance.
+                            end
+                        
+                        until true
+                        
+                    end -- end-of for candidate photo loop.
+                    
+                    --return nil -- ###-one - for test purposes only.
+                    
+                    -- if no cand-photos then all had differing serial numbers or hi-rez dto - not a dup.
+                    
+                else -- incoming does not have dto-hi, but there are other photos with same dto-lo.
+                    for candPhoto, candRec in pairs( dtoRecs ) do
+                        repeat
+                            local candFile = candRec.path or candPhoto:getRawMetadata( 'path' ) -- path is always in cand-rec - just paranoid I guess.
+                            local candFilename = candRec.fn or error( "no fn" )
+                            local candExt = LrPathUtils.extension( candFile ) -- this can't change after import.
+                            
+                            if str:isEqualIgnoringCase( origExt, newExt ) then -- file is not being converted to dng
+                                if not str:isEqualIgnoringCase( origExt, candExt ) then -- incoming extension is different than candidate.
+                                    break -- prospective candidate can not possibly be a duplicate if different extension
+                                -- else preform the normal checks below
+                                end
+                            else -- original is being converted to different format, e.g. dng.
+                                if not str:isEqualIgnoringCase( origExt, candExt ) and not str:isEqualIgnoringCase( newExt, candExt ) then -- incoming extension different than raw or converted dng.
+                                    break -- prospective candidate can not possibly be a duplicate if different than propietary raw and not dng.
+                                end
+                            end
+                            
+                            local candCamId
+                            if isSn then
+                                candCamId = candRec.sn
+                            elseif isModel then
+                                candCamId = candRec.model
+                            -- else nil
+                            end
+                            if camId and not candCamId or not camId and candCamId then
+                                -- break -- prospective condidate is not a duplicate, since any true duplicate would have camId if source has camId, or not if not..
+                            elseif camId and ( camId == candCamId ) then -- they're present and equal
+                                newRecs[candPhoto] = candRec -- seems counter intuitive, but having same ID and same lo-rez time means may be a duplicate, but it's not conclusive yet.
+                                -- break
+                            else -- both are not present or are present but not equal
+                                if camId then -- present but not equal
+                                    -- can't be duplicate
+                                else -- both are not present
+                                    newRecs[candPhoto] = candRec -- consider additional criteria in next stage of pipeline (e.g. filename-and-or-whatever..).
+                                end
+                                -- break
+                            end
+                        until true
+                    end
+                    -- if no cand-photos then all had differing serial numbers - not a dup
+                end -- end of dto-hi clause.
+                if tab:is( newRecs ) then -- same serial number or serial number not obtained
+                    -- fall-through to consider other criteria, but just amongst candidates.
+                    candRecs = newRecs -- and return nil.
+                else -- sns for all photos were obtained
+                    app:logV( "Import criteria satisfied - all had different camera ID info and/or dto - not a dup." )
+                    return true -- all had different serial numbers and/or hi-rez dto (or different ext) - not a dup.
+                end
+            else -- no record of photos with same lo-rez dto.
+                --Debug.pause( dtoLo )
+                app:logV( "Import criteria satisfied - no record of photos with same dto - not a dup." )
+                return true
+            end
+        else
+            app:logV( "*** No date-time original in exif - forwarding info for *all photos in catalog* to next stage for further consideration (could be time consuming)." )
+            candRecs = Import.allPhotoRecs -- return nil.
+        end
+    end
+    
+    -- Try via camera ID and folder/file-image numbers.
+    -- reminder: this function limited to 30 files (intended to be used to refine those with inconclusive dto-lo, not those with missing dto-lo which warrant whole catalog consideration).
+    local function cameraIdAndImageNumbers()
+        local newRecs = {} -- note: same deal with folder & file numbers: they're only non-ambiguous if camera-ID matches.
+        if Import.numTable == nil then Import.numTable = {} end
+        local folderNumId
+        local folderNum
+        local fileNumId
+        local fileNum
+        local function getFolderNum( id )
+            local tn = num:numberFromString( exif[id] )
+            if tn then -- number
+                folderNumId = id
+                folderNum = exif[id] -- save string version for comparison
+            end
+        end
+        local function getFileNum( id )
+            local tn = num:numberFromString( exif[id] )
+            if tn then -- number
+                fileNumId = id
+                fileNum = exif[id]
+            end
+        end
+        -- ###3 could use exiftool method:
+        getFolderNum( 'DirectoryNumber' ) -- e.g. Nikon
+        if not folderNum then getFolderNum( 'DirectoryIndex' ) end -- e.g. Canon
+        if not folderNum then getFolderNum( 'FolderNumber' ) end -- wild guess
+        if not folderNum then getFolderNum( 'FolderIndex' ) end -- ditto
+        if not folderNum then return end
+        -- ###3 could use exiftool method:
+        getFileNum( 'FileNumber' ) -- e.g. Nikon and older Canon's
+        if not fileNum then getFileNum( 'FileIndex' ) end -- newer Canon's
+        if not fileNum then getFileNum( 'ImageNumber' ) end -- varied models
+        if not fileNum then getFileNum( 'ImageIndex' ) end -- wild guess
+        if not fileNum then return end
+        for candPhoto, candRec in pairs( candRecs ) do
+            repeat
+                local candFile = candRec.path or candPhoto:getRawMetadata( 'path' ) -- path is always in cand-rec - just paranoid I guess.
+                local candFilename = candRec.fn or error( "no fn" )
+                local candExt = LrPathUtils.extension( candFile ) -- this can't change after import.
+                
+                if str:isEqualIgnoringCase( origExt, newExt ) then -- file is not being converted to dng
+                    if not str:isEqualIgnoringCase( origExt, candExt ) then -- incoming extension is different than candidate.
+                        break -- prospective candidate can not possibly be a duplicate if different extension
+                    -- else preform the normal checks below
+                    end
+                else -- original is being converted to dng - it's the only possible way the extensions aren't equivalent.
+                    -- new-ext is 'dng' or 'DNG (or 'Dng'..).
+                    if not str:isEqualIgnoringCase( origExt, candExt ) and not str:isEqualIgnoringCase( newExt, candExt ) then -- incoming extension different than raw or converted dng.
+                        break -- prospective candidate can not possibly be a duplicate if different than propietary raw and not dng.
+                    end
+                end
+                
+                local candCamId
+                if isSn then
+                    candCamId = candRec.sn
+                elseif isModel then
+                    candCamId = candRec.model
+                -- else nil
+                end
+                if camId and not candCamId or not camId and candCamId then
+                    break -- prospective condidate is not a duplicate, since any true duplicate would have camId if source has camId, or not if not..
+                elseif camId and ( camId == candCamId ) then -- they're present and equal
+                    -- if same camera, then same numbers will be conclusive - fall-through and check 'em..
+                else -- both are not present or are present but not equal
+                    if camId then -- present but not equal
+                        -- can't be duplicate
+                    else -- both are not present
+                        newRecs[candPhoto] = candRec -- consider additional criteria in next stage of pipeline (e.g. filename-and-or-whatever..).
+                    end
+                    break -- without present and equal camera ids, the folder and file numbers are meaningless.
+                end
+                
+                local nums = Import.numTable[candPhoto]
+                if nums == nil then
+                    Import.numTable[candPhoto] = {}
+                    nums = Import.numTable[candPhoto]
+                end
+                if nums.folderNum == nil or nums.fileNum == nil then
+                
+                    -- note: this is redundent if all candidates came from pre-scrutinized dto, but such is not guaranteed, so here we go again.
+                    -- determine if file moved or deleted..
+                    if not catalog:findPhotoByUuid( candRec.uuid ) then -- photo has been removed from catalog.
+                        app:logV( "Candidate is no longer in catalog - being removed from consideration as well.. (last known as: ^1", candFile )
+                        Import.allPhotoRecs[candPhoto] = nil -- note: photo no longer in catalog can never return with same uuid, so no need to init on session basis.
+                        break -- consider this candidate no further - proceed to next candidate.
+                    elseif not fso:existsAsFile( candFile ) then -- either has been moved in Lightroom, or source file has been deleted from disk outside Lightroom.
+                        local file = candFile
+                        candFile = candPhoto:getRawMetadata( 'path' ) -- get (potentially) changed path.
+                        candRec.path = candFile
+                        candFilename = LrPathUtils.leafName( candFile )
+                        candRec.fn = candFilename
+                        if fso:existsAsFile( candFile ) then
+                            app:logV( "Candidate seems to have moved from '^1' to '^2'", file, candFile )
+                        else
+                            app:logV( "Candidate is offline: ^1 - check via image numbers is being aborted.", candFile, file )
+                            newRecs[candPhoto] = candRec
+                            break
+                        end
+                    end
+                            
+                    local target = candPhoto:getRawMetadata( 'path' )
+                    ets:addArg( '-S' )
+                    ets:addArg( '-'..folderNumId )
+                    ets:addArg( '-'..fileNumId )
+                    ets:setTarget( target )
+                    local rslt, errm = ets:execute()
+                    if str:is( rslt ) then
+                        if not str:is( errm ) then
+                            local values = exifTool:parseShorty( rslt )
+                            nums.folderNum = values[folderNumId] or ""
+                            nums.fileNum = values[fileNumId] or ""
+                        else
+                            newRecs[candPhoto] = candRec
+                            break
+                        end
+                    else
+                        if str:is( errm ) then app:logW( errm ) end
+                        newRecs[candPhoto] = candRec
+                        break
+                    end
+                end
+                if str:is( nums.folderNum ) and str:is( nums.fileNum ) then
+                    if folderNum == nums.folderNum and fileNum == nums.fileNum then -- reminder: jpg & raw may have same info yet not be dups
+                            return false, "duplicate - based on folder & file number"
+                    -- else folder or file num is different
+                    end
+                -- else not available, so either cand-recorded, or not a dup.
+                end
+            until true
+        end
+        if tab:is( newRecs ) then
+            candRecs = newRecs
+            return -- nil
+        else -- no issues obtaining folder and/or file numbers, and all were different.
+            return true
+        end
+    end
+    
+    -- filenames and/or whatever.. - the buck stops here (return true or false, not nil - residual cand-recs will be ignored).
+    local function filenamesAndOrWhatever_doOrDie()
+        -- no point initializing new-recs - this method makes final decision.
+        assert( tab:is( candRecs ), "no cand recs" )
+        local cache = nil -- ###3 - could try to init cache..
+        for candPhoto, candRec in pairs( candRecs ) do
+            assert( candPhoto and candRec, "oop" )
+            local ta = {} -- message string buffer for when check doesn't match
+            repeat
+                local tb = {} -- message string buffer for when check matches
+                local candFile = candRec.path or candPhoto:getRawMetadata( 'path' ) or dbgf( "?" ) -- path is always in cand-rec - just paranoid I guess.
+                local candFilename = candRec.fn or error( "no fn" )
+                local candExt = LrPathUtils.extension( candFile )
+    
+                dbgf( "Comparing candidate, path: '^1', filename: '^2', ext: ^3, disqualified? - ^4", candFile, candFilename, candExt, spec.import.ignorePhotoSet[candPhoto] and "yes" or "no" )
+    
+                -- check if candidate has been disqualified.
+                -- do NOT comment this out:
+                if spec.import.ignorePhotoSet[candPhoto] then break end -- if requiste info unavailable (photo is "disqualified"), to determine if dup - we have no choice but to import - user to re-configure if need be..
+                
+                if str:isEqualIgnoringCase( origExt, newExt ) then -- file is not being converted to dng
+                    if not str:isEqualIgnoringCase( origExt, candExt ) then -- incoming extension is different than candidate.
+                        ta[#ta + 1] = str:fmtx( "incoming extension (^1) not matching candidate: ^2", origExt, candExt )
+                        break -- prospective candidate can not possibly be a duplicate if different extension
+                    -- else preform the normal checks below
+                    end
+                else -- original is being converted to different format, e.g. dng.
+                    if not str:isEqualIgnoringCase( origExt, candExt ) and not str:isEqualIgnoringCase( newExt, candExt ) then -- incoming extension different than raw or converted dng.
+                        ta[#ta + 1] = str:fmtx( "incoming (original) extension (^1) not matching candidate: ^2 (new extension: ^3).", origExt, candExt, newExt )
+                        break -- prospective candidate can not possibly be a duplicate if different than propietary raw and not dng.
+                    end
+                end
+
+                -- fall-through => incoming extension matches candidate, or if incoming being converted to dng, candidate is also dng.
+                
+                -- consider original (and/or current) filenames:
+                ------------------------------------------------
+
+                local candOrigFilename
+                local fnMatch -- flag which indicates a filename match has been encountered.
+
+                -- important note: file may have been deleted, moved, or renamed without notice, so part
+                -- of the goal here is to weed out with quick checks as much as possible before determining
+                -- file status and comparing filenames.
+                -- anyway, this function requires candOrigFilename, origFilename, and newFilename be initialized prior to calling,
+                -- and sets fnMatch to indicate result of comparison, along with adding to tb if match..
+                local function compareFilenames()         
+                
+                    fnMatch = false
+                        
+                    if not fnMatch and candOrigFilename and compareImportBeforeRenamingToOriginalCatalogName then
+                        fnMatch = compareImportBeforeRenamingToOriginalCatalogName( origFilename, candOrigFilename )
+                        if fnMatch then
+                            tb[#tb + 1] = "import before rename matches original name in catalog"
+                        end
+                    end
+                                            
+                    if not fnMatch and candOrigFilename and compareImportAfterRenamingToOriginalCatalogName then
+                        fnMatch = compareImportAfterRenamingToOriginalCatalogName( newFilename, candOrigFilename )
+                        if fnMatch then
+                            tb[#tb + 1] = "import after rename matches original name in catalog"
+                        end
+                    end
+                                            
+                    if not fnMatch and compareImportBeforeRenamingToCurrentCatalogName then
+                        fnMatch = compareImportBeforeRenamingToCurrentCatalogName( origFilename, candFilename )
+                        if fnMatch then
+                            tb[#tb + 1] = "import before rename matches current name in catalog"
+                        end
+                    end
+                                            
+                    if not fnMatch and compareImportAfterRenamingToCurrentCatalogName then
+                        fnMatch = compareImportAfterRenamingToCurrentCatalogName( newFilename, candFilename )
+                        if fnMatch then
+                            tb[#tb + 1] = "import after rename matches current name in catalog"
+                        end
+                    end
+                end
+
+                -- preliminarily, check if original filename info is present, if required for comparison.
+                -- reminder: defer actual filename check until other (location & name independent) metadata are more speedily tested.
+                if filenameEnable then       
+                    local errm
+                    assert( candPhoto and candPhoto.localIdentifier, "????" )
+                    local preferPresetOverFile = false -- set true if you prefer sqliteroom-compat orig-filename over that obtained via preset when both are available.
+                    candOrigFilename, errm = cat:getOriginalFilename( candPhoto, preferPresetOverFile ) -- reminder: "original" in this context means "before renaming in Lightroom", NOT "before importing in Lightroom".
+                    if not candOrigFilename then
+                        if compareImportBeforeRenamingToOriginalCatalogName or compareImportAfterRenamingToOriginalCatalogName then
+                            if compareImportBeforeRenamingToCurrentCatalogName or compareImportAfterRenamingToCurrentCatalogName then
+                                app:logV( "Original filename in catalog is not available, but will compare to current filename in catalog." )
+                            else
+                                app:logW( "^1 - ^2", candFile, errm )
+                                spec.import.ignorePhotoSet[candPhoto] = true
+                                break -- if original filename not available, then unless denied some other way, we gotta import it..
+                            end
+                        -- else no comparisons to original name in catalog are defined, so point is moot.
+                        end
+                    else -- use it or dont..
+                        --dbgf( candOrigFilename )
+                    end
+                end
+
+                -- consider enough metadata to either seal the deal, or improve odds..
+                -- reminder: if only "improving odds", other metadata must be definitive: e.g. filenames, file-dates, file-size...
+                ----------------------------------------------------------------------
+                
+                local function compareMetadata()
+                    --dbgf( "comparing metadata" )
+                    local m = {}
+                    for i, def in ipairs( compareMetadataDefs ) do
+                        repeat
+                            local impMeta = exif[def.import.id]
+                            local sts, candMeta
+                            --assert( def, "no def" )
+                            --assert( def.candidate, "no cand" )
+                            --assert( def.candidate.key, "no key" )
+                            --dbgf( "getting cand-meta: ^1", def.candidate.key )
+                            if def.candidate.type == 'raw' then
+                                sts, candMeta = LrTasks.pcall( candPhoto.getRawMetadata, candPhoto, def.candidate.key )
+                            elseif def.candidate.type == 'fmt' then
+                                sts, candMeta = LrTasks.pcall( candPhoto.getFormattedMetadata, candPhoto, def.candidate.key )
+                            else -- type is now required and checked..
+                                app:logW( "Unrecognized data type: '^1' (key=^2) - being ignored..", def.candidate.type, def.candidate.key )
+                                break
+                            end
+                            if sts then
+                                --dbgf( "cand-meta: ^1", candMeta )
+                            else
+                                Debug.pause( def.candidate.type, def.candidate.key )
+                                app:logW( "Unable to obtain '^1' metadata using '^2' as key.", def.candidate.type, def.candidate.key )
+                                break -- test is essentially invalid if error (like user entered an invalid key) retreiving candidate metadata.
+                                -- ###2 breaking here was causing a problem earlier, but I think that was because of an erroneous entry in def table.
+                            end
+                            if impMeta ~= nil then
+                                if candMeta ~= nil then
+                                    local sts, err
+                                    if def.compare then
+                                        sts, err = def.compare( impMeta, candMeta )
+                                    else
+                                        sts = ( impMeta == candMeta ) -- err stays nil.
+                                    end
+                                    if sts ~= nil then -- definitive
+                                        if sts then -- true (match)
+                                            m[#m + 1] = str:fmtx( "Matching ^1", def.title )
+                                        else -- false (non-match).
+                                            return false, str:fmtx( "Metadata mismatch (^1), import: ^2, candidate: ^3", def.title, impMeta, candMeta )
+                                        end
+                                    else
+                                        app:logW( "Unable to compare import exif data against catalog metadata (^1), import: '^2', catalog: '^3'", def.title, impMeta, candMeta )
+                                        break -- try next one..
+                                    end
+                                else
+                                    return false, str:fmtx( "Import has metadata for '^1' that candidate doesn't: ^2", def.title, impMeta )
+                                end
+                            else -- imp-meta is nil
+                                if candMeta == nil then
+                                    m[#m + 1] = str:fmtx( "both nil ^1", def.title )
+                                else
+                                    return false, str:fmtx( "Import is missing metadata (^1), candidate's: ^2", def.title, candMeta )
+                                end
+                            end
+                        until true
+                    end
+                    return true, table.concat( m, ", " ) -- matches
+                end
+                
+                local matches, etc = compareMetadata()
+                if not matches then
+                    dbgf( etc )
+                    ta[#ta + 1] = etc
+                    break
+                else
+                    dbgf( etc )
+                    tb[#tb + 1] = etc
+                end
+                
+                -- consider file creation time:
+                -------------------------------
+                if fileCreationEnable then
+                    local origCreationTime = fso:getFileCreationDate( origFile )
+                    local candCreationTime = fso:getFileCreationDate( candFile )
+                    if not candCreationTime then
+                        app:logW( "No photo file creation time - file may be missing: ^1", candFile )
+                        spec.import.ignorePhotoSet[candPhoto] = true
+                        break
+                    end
+                    if origCreationTime ~= candCreationTime then
+                        ta[#ta + 1] = str:fmtx( "original file creation time ^3 (^1) not matching candidate: ^4 ^2", origCreationTime, candCreationTime, origFile, candFile )
+                        break
+                    else
+                        tb[#tb + 1] = str:fmtx( "file creation time matches" )
+                    end
+                end
+                
+                -- consider file modification time:
+                -----------------------------------
+                if fileModificationEnable then
+                    local origModificationTime = fso:getFileModificationDate( origFile )
+                    local candModificationTime = fso:getFileModificationDate( candFile )
+                    if not candModificationTime then
+                        app:logW( "No file modification time - file may be missing: ^1", candFile )
+                        spec.import.ignorePhotoSet[candPhoto] = true
+                        break
+                    end
+                    if origModificationTime ~= candModificationTime then
+                        ta[#ta + 1] = str:fmtx( "original file modification time (^1) not matching candidate: ^2", origModificationTime, candModificationTime )
+                        break
+                    else
+                        tb[#tb + 1] = str:fmtx( "file modification time matches" )
+                    end
+                end
+                
+                -- consider file size:
+                ----------------------
+                if fileSizeEnable then
+                    local origFileSize = fso:getFileSize( origFile )
+                    local candFileSize = fso:getFileSize( candFile )
+                    if not candFileSize then
+                        app:logW( "No file size - file may be missing: ^1", candFile )
+                        spec.import.ignorePhotoSet[candPhoto] = true
+                        break
+                    end
+                    if origFileSize ~= candFileSize then
+                        ta[#ta + 1] = str:fmtx( "original file size (^1) not matching candidate: ^2", origFileSize, candFileSize )
+                        break
+                    else
+                        tb[#tb + 1] = str:fmtx( "file size matches" )
+                    end
+                end
+                
+                -- fall-through => preliminary checks match (filename status unknown).
+                -- reminder: reason filenames are checked *after* preliminaries is for performance - metadata matches are independent
+                -- of source file name & location, and the latter are more time consuming to determine, so filename is checked after
+                -- other things (hopefully) more quickly disqualify some.
+                if not catalog:findPhotoByUuid( candRec.uuid ) then -- photo has been removed from catalog.
+                    app:logV( "Candidate is no longer in catalog - being removed from consideration as well.. (last known as: ^1)", candFile )
+                    Import.allPhotoRecs[candPhoto] = nil -- note: photo no longer in catalog can never return with same uuid, so no need to init on session basis.
+                    break -- consider this candidate no further - proceed to next candidate.
+                elseif not fso:existsAsFile( candFile ) then -- either has been moved in Lightroom, or source file has been deleted from disk outside Lightroom.
+                    --dbgf( candFile )
+                    local file = candFile
+                    candFile = candPhoto:getRawMetadata( 'path' ) -- get (potentially) changed path.
+                    candRec.path = candFile
+                    candFilename = LrPathUtils.leafName( candFile )
+                    candRec.fn = candFilename
+                    if candFile ~= file and fso:existsAsFile( candFile ) then
+                        app:logV( "Candidate seems to have moved from '^1' to '^2'", file, candFile )
+                    else
+                        app:logV( "Candidate is offline: ^1 - check via filenames and/or whatever is being aborted.", candFile )
+                        break
+                    end
+                -- else still in catalog, and still in same place on disk.
+                end
+                
+                if filenameEnable  then
+                    --Debug.pause( "comparing" )
+                    compareFilenames() -- using candFile & candFilename, and set fnMatch to indicate result.
+                    if not fnMatch then
+                        dbgf( "not matching" )
+                        ta[#ta + 1] = str:fmtx( "import filename(s) not matching filename(s) in catalog" )
+                        break
+                    else -- else go-on..
+                        dbgf( "match" )
+                    end
+                end
+                
+                local exp
+                if #tb > 0 then
+                    exp = table.concat( tb, ", " )
+                else
+                    exp = "based on filename and other information"
+                end
+                return false, "duplicate - "..exp
+                
+            until true
+            
+            -- note: ta contains the reason the candidate file did not deny importability, but this point will be reached for every candidate, so no log unless debugging..
+            if app:isAdvDbgEna() and false then -- warning: it's possible we will come here for every photo in the catalog, each import, which may be too much debug log info, so consider adding custom criteria to reduce amount of logged info.
+                if #ta > 0 then
+                    dbgf( "ta: ^1", table.concat( ta, ", " ) )
+                else
+                    dbgf( "no reason given why candidate is not denying importability" )
+                end
+            -- else silence
+            end
+ 
+        end -- end of candidate consideration loop.
+        
+        return true -- if all candidates have been considered and none objected resolutely to importability, then we gotta permit import.
+        
+    end -- end of function filenames, etc. - last stage of the pipeline..
+        
+    -- [ [ ###-one - comment out for test purposes only:
+    local importable, ifNotWhy = cameraIdAndDto()
+    if importable ~= nil then
+        assert( importable or ifNotWhy, "not importable but no reason why" )
+        return importable, ifNotWhy
+    else
+        assert( tab:is( candRecs ), "not sure if importable or not (based on camera ID and DTO) but no candidate photos for further consideration - hmm..." )
+    end
+    
+    -- see how many remain to be evaluated after checking cam-id&dto.
+    local cnt = 0
+    for k, v in pairs( candRecs ) do
+        cnt = cnt + 1
+        if cnt == 31 then -- too many to do id/img-num checking (since requires exiftool'ing each file in catalog).
+            Debug.pauseIf( candRecs ~= Import.allPhotoRecs, "whoa! - so many candidates.." )
+            break
+        end
+    end
+    
+    -- note: cam-id&nums will require exif-tooling candidates, so only appropriate for resolving uncertainly within a relatively small set.
+    if cnt <= 30 then -- candidate photos have been whiddled down to something manageable (usually because shot at same lo-rez time, but no hi-rez time).
+        local importable, ifNotWhy = cameraIdAndImageNumbers() -- folder & file/image number.
+        if importable ~= nil then
+            assert( importable or ifNotWhy, "not importable but no reason why" )
+            return importable, ifNotWhy
+        else
+            assert( tab:is( candRecs ), "not sure if importable or not (after folder/file-number consideration) but no candidate photos for further consideration - hmm..." )
+        end
+    -- else probably all-photos.
+    end
+    -- ] ]
+    -- candRecs = Import.allPhotoRecs -- ###-one - uncomment this line for test purposes only.
+    
+    local importable, ifNotWhy = filenamesAndOrWhatever_doOrDie() -- filename...
+    Debug.pause( importable, ifNotWhy )
+    if importable ~= nil then
+        assert( importable or ifNotWhy, "not importable but no reason why" )
+        return importable, ifNotWhy
+    else
+        error( "final attempt at dup. detection should be definitive" )
+    end
+    error( "how here?" )
+end
+
+
+
+
+
+--   T O K E N   S U P P O R T
+-- (primarily intended to support folder/file naming)
+
+tokens = {} -- filenaming token cache (not global - declared above).
+
+-- get token from cache, if typ is unspecified, 'default' is assumed.
+-- returns nil if no token. note - no errors are thrown, nor logged.
+-- the complete set of tokens available for "getting" includes all exif metadata, and any others that have been added -
+-- search for putToken to get the whole story.
+local function getToken( typ, ... )
+    typ = typ or 'default'
+    local names = { ... }
+    local vref = tokens[typ]
+    for i, name in ipairs( names ) do
+        if vref then
+            if vref[name] then
+                vref = vref[name]
+            else
+                return nil
+            end
+        else
+            --Debug.pause( "no", name, "in", typ )            
+            return nil
+        end
+    end
+    return vref
+end
+
+-- put (potentially structured) value in token cache, typ is required, but can be anything, as long as name isn't already used by one of the fields in
+-- the reserved type: 'exif', or the default type: 'default'.
+local function putToken( typ, name, value )
+    if typ == nil then
+        app:callingError( "No default type for putting tokens - only for getting them. May I suggest using 'custom' for type, if you are putting custom tokens." )
+    end
+    if tokens[typ] == nil then
+        tokens[typ] = {}
+    end
+    tokens[typ][name] = value
+end
+
+-- init non-exif tokens. Note: @11/Nov/2012, all such tokens are "filed under 'default' namespace" (stored within 'default' type).
+-- note: since this is called based on presence of tokens to be used in folder & file names, it should be an error warranting a skipped file, at a minimum, if token not initializable.
+-- although this function is not able to yank the rug, lack of putting needed tokens will result in error further on down the road, when the token is needed (gotten using getter).
+local function initToken( params, typ, ... )
+    typ = typ or 'default'
+    local value = getToken( typ, ... )
+    if value ~= nil then
+        --Debug.pause( "already init" )
+        return
+    end
+    local names = { ... } -- array of names, to support future.
+    local name = names[1] -- presently, only one name is used, but value may be structure (tokens accessed via array of names).
+    local import = params.spec.import or error( "no import" )
+    if name == 'dateTimeOriginal' then
+        local dts = getToken( 'exif', "DateTimeOriginal" ) -- could access directly: tokens.exif.DateTimeOriginal, but this could allow for graceful error checking...
+        if not str:is( dts ) then
+            app:log( "*** Date-time original not present in exif metadata - using file-creation timestamp instead." )
+            local dti = LrFileUtils.fileAttributes( params.file or error( "no file" ) ).fileCreationDate -- integer
+            if dti then
+                local settings = params.spec.settings or error( "no settings" )
+                local fileTimeNumStruct = date:timeStruct( dti, settings.utcOffsetInSeconds, true ) -- nil => local time-zone, 0 => utc/gmt.
+                putToken( typ, name, fileTimeNumStruct )
+            else
+                app:logWarning( "Unable to initialize date-time (file creation timestamp) structure." )
+                return -- do not put token.
+            end
+        else
+            local dtn, errm = exifTool:parseDateTime( dts ) -- struct, which may include utc offset, and/or subsec.
+            if dtn == nil then
+                app:logWarning( errm )
+                return -- do not put token.
+            end
+            putToken( typ, name, dtn )
+        end
+    elseif name == 'dateTimeNow' then
+        local dt = LrDate.currentTime()
+        local fileTimeNumStruct = date:timeStruct( dt, nil, true ) -- now time is always local (true => include julian day).
+        putToken( typ, name, fileTimeNumStruct )
+    elseif name == 'dateTimeCreated' then
+        local dt = fso:getFileCreationDate( params.file )
+        if dt then
+            local fileTimeNumStruct = date:timeStruct( dt, nil, true )
+            putToken( typ, name, fileTimeNumStruct )
+        else
+            app:logWarning( "Unable to initialize date-time-created token." )
+            return -- do not put token.
+        end
+    elseif name == 'dateTimeModified' then
+        local dt = fso:getFileModificationDate( params.file )
+        if dt then
+            local fileTimeNumStruct = date:timeStruct( dt, nil, true )
+            putToken( typ, name, fileTimeNumStruct )
+        else
+            app:logWarning( "Unable to initialize date-time-modified token." )
+            return -- do not put token.
+        end
+    elseif name == 'folderNum' then
+        local _n1 = getToken( typ, "folderNum" )
+        local n1
+        if _n1 then
+            n1 = num:numberFromString( getToken( 'exif', 'DirectoryIndex' ) ) -- e.g. Canon
+            if n1 == _n1 then
+                return -- already init.
+            else
+                app:logWarning( "Folder number token already initialized based on file number (^1), but not matching exif (^2) - exif taking priority.", _n1, n1 )
+            end
+        end
+        if not n1 then
+            n1 = num:numberFromString( getToken( 'exif', 'DirectoryNumber' ) ) -- e.g. Nikon
+        end
+        local n2 = import:getFolderNumber( params ) -- parsed to number.
+        if n1 and n2 then
+            if n1 == n2 then
+                putToken( typ, name, n1 )
+            else
+                app:logv( "Folder number from exif does not match folder number parsed from file's parent folder - giving priority to exif metadata." )
+                putToken( typ, name, n1 )
+            end
+        elseif n1 then
+            app:logv( "No folder number parsed from file's parent, but exif metadata has folder number which is being used." )
+            putToken( typ, name, n1 )
+        elseif n2 then
+            --app:logWarning( "Exif metadata does not contain folder number, but a folder number of '^1' was parsed from file's parent, so it's being used - but this may have been the wrong thing to do: check it.", n2 )
+            --putToken( typ, name, n2 )
+            app:log( "*** Exif metadata does not contain folder number. Although a folder number of '^1' was parsed from file's parent, it shan't be used, since that might be the wrong thing to do: check it.", n2 )
+            return
+        else
+            app:log( "*** Unable to obtain folder number." )
+        end
+    elseif name == 'fileNum' then
+        --Debug.lognpp( "exif", tokens['exif'] )
+        --Debug.showLogFile()
+        local n1s = getToken( 'exif', 'FileNumber' )
+        local n1
+        if n1s then
+            local dash = n1s:find( "-" )
+            if dash then
+                n1 = num:numberFromString( n1s:sub( dash + 1 ) )
+                local f1 = num:numberFromString( n1s:sub( 1, dash - 1 ) )
+                local _f1 = num:numberFromString( getToken( 'exif', 'DirectoryIndex' ) )
+                if _f1 then
+                    if _f1 == f1 then
+                        -- Debug.pause() -- good
+                    else
+                        app:logWarning( "Directory index from exif (^1) does not match folder number parsed from composite file number string (^2)", _f1, f1  )
+                    end
+                -- else not init, yet.
+                end
+                putToken( typ, "folderNum", f1 )
+            else
+                n1 = num:numberFromString( n1s )
+            end
+        end
+        local n2 = import:getFileNumber( params )
+        if n1 and n2 then
+            if n1 == n2 then
+                putToken( typ, name, n1 )
+            else
+                app:logv( "File number from exif does not match file number parsed from filename - giving priority to exif metadata." )
+                putToken( typ, name, n1 )
+            end
+        elseif n1 then
+            app:logv( "No file number parsed from filename, but exif metadata has file number which is being used." )
+            putToken( typ, name, n1 )
+        elseif n2 then
+            --putToken( typ, name, n2 ) - this can cause some weird results when auto-importing - file-number keeps jumping around and file keeps getting re-imported...
+            app:log( "*** Exif metadata does not contain file number. Although a file number of '^1' was parsed from the filename, it shan't be used, since that might be the wrong thing to do: check it.", n2 )
+            return
+        else
+            app:log( "*** Unable to obtain file number." )
+        end
+    elseif name == 'filename' then -- basename
+        putToken( typ, name, LrPathUtils.removeExtension( LrPathUtils.leafName( params.file ) ) )
+    elseif name == 'customText_1' then
+        putToken( typ, name, params.spec.settings.customText_1 or "no ctxt1" )
+    elseif name == 'customText_2' then
+        putToken( typ, name, params.spec.settings.customText_2 or "no ctxt2" )
+    elseif name == 'importNumber' then
+        putToken( typ, name, str:to( import:getImportNumber() ) )
+    elseif name == 'sessionItemNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'session', 'item' ) ) )
+    elseif name == 'sessionPhotoNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'session', 'photo' ) ) )
+    elseif name == 'sessionVideoNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'session', 'video' ) ) )
+    elseif name == 'sourceItemNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'source', 'item' ) ) )
+    elseif name == 'sourcePhotoNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'source', 'photo' ) ) )
+    elseif name == 'sourceVideoNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'source', 'video' ) ) )
+    elseif name == 'targetItemNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'target', 'item' ) ) )
+    elseif name == 'targetPhotoNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'target', 'photo' ) ) )
+    elseif name == 'targetVideoNum' then
+        putToken( typ, name, str:to( import:getSeqNum( 'target', 'video' ) ) )
+    end
+end
+
+-- c-style token formats. so far only used for 0-padded numerics, like date/time & sequence numbers.
+-- see 'C' printf documentation for details and more options.
+local formats_default = {
+    ["9-digit"] = "%09u",
+    ["8-digit"] = "%08u",
+    ["7-digit"] = "%07u",
+    ["6-digit"] = "%06u",
+    ["5-digit"] = "%05u",
+    ["4-digit"] = "%04u",
+    ["3-digit"] = "%03u",
+    ["2-digit"] = "%02u",
+    ["1-digit"] = "%1u",
+    ["month-abbr"] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" },
+    ["month-word"] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" },
+}
+
+-- Gets a subpath or folder/file-name as specified by name tokens. note: formats can be specified as part of name spec, if default formats not covering it.
+local function getName( nameSpec )
+    local formats = nameSpec.formats or formats_default
+    local t = {}
+    for i, v in ipairs( nameSpec ) do
+        repeat
+            if v.literal then
+                t[#t + 1] = str:to( v.literal )
+                break
+            end
+            local token = getToken( v.type, unpack( v.field ) )
+            if token ~= nil then
+                if v.format then
+                    local fmt = formats[v.format]
+                    if fmt then
+                        if type( fmt ) == 'string' then
+                            local v = string.format( fmt, token )
+                            if v ~= nil then
+                                t[#t + 1] = v -- formatted
+                            else
+                                
+                            end
+                        elseif type( fmt ) == 'table' then
+                            local v = fmt[token]
+                            if v ~= nil then
+                                t[#t + 1] = v -- formatted
+                            -- else
+                            end
+                        elseif type( fmt ) == 'function' then
+                            local v = fmt( token )
+                            if v ~= nil then
+                                t[#t + 1] = v -- formatted
+                            -- else
+                            end
+                        else
+                            app:error( "bad formatter (type): ^1", str:to( fmt ), type( fmt ) )
+                        end
+                    else
+                        --
+                    end
+                else
+                    t[#t + 1] = token -- unformatted                    
+                end
+            else
+                --Debug.pause( str:fmtx( "no filenaming token named '^1' has been initialized - check 'initToken' and/or 'filenameSpec' in advanced settings.", v.field[1] ) )
+                return nil, str:fmtx( "no filenaming token named '^1' has been initialized - check 'initToken' and/or 'filenameSpec' in advanced settings.", v.field[1] )
+            end
+        until true
+    end
+    if #t > 0 then
+        local basename = table.concat( t, "" )
+        --Debug.pause( basename )
+        if str:is( basename ) then
+            return basename
+        else
+            return nil, "no name"
+        end
+    else
+        return nil, "no name specs"
+    end
+end
+
+
+
+--   C U S T O M   T A R G E T   N A M I N G   S U P P O R T
+
+-- Note: this stuff probably should be in the session object, otherwise multiple manual import sessions would conflict - presently not possible (due to recursion guarding), still...
+-- Stuff to support custom dir-text prompting:
+local saveDir -- saved dir to assist dir change detection.
+local dirText -- custom dir text.
+
+-- return custom dir text - prompt if need be when import destination directory changes.
+local function considerTargetChange( spec, subPathOrName )
+    local import = spec.import or error( "no import in spec" )
+    local settings = spec.settings or error( "no settings in spec" )
+    if saveDir == nil or subPathOrName ~= saveDir then -- dir-change
+        import:initTarget( spec )
+        if str:is( settings.promptForCustomDirText ) and ( ( settings.promptForCustomDirText ~= 'once' ) or ( saveDir == nil ) ) then
+            dirText = dia:getSimpleTextInput {
+                title = str:fmtx( "Enter custom folder text" ), 
+                subtitle = str:fmtx( "Enter custom text to be used for renaming: '^1'", subPathOrName ),
+                init = dirText,
+            }
+        end
+        saveDir = subPathOrName
+    end
+    return dirText
+end
+
+
+
+--   I N I T   A N D   E N D   F U N C T I O N S
+
+-- called before adding a (copied) file to the catalog - before computing import destination & filename.
+-- goal is to load tokens referenced by filenaming code.
+local function initFile_default( params )
+
+    local spec = params.spec or error( "no spec" )
+    local call = spec.call or error( "no call" )
+    local settings = spec.settings or error( "no settings" )
+    
+    -- no longer optional: - user can not call this function, or specify default values, but has to do one or the other...
+    local foldernameSpec = settings.foldernameSpec or error( "no foldername spec" )
+    local filenameSpec = settings.filenameSpec or error( "no filename spec" )
+    
+    -- optional:
+    local videoFoldernameSpec = settings.videoFoldernameSpec or {}
+    local videoFilenameSpec = settings.videoFilenameSpec or {}
+    
+    tokens = {} -- clear token cache.
+    local import = spec.import or error( "no import" )
+    Debug.pauseIf( not import.ets, "no ets" )
+    Debug.pauseIf( not exifTool:isSessionOpen( import.ets:getName() ), "ets not open", import.ets:getName() )
+    local exif, errm = import:getExifMetadata( params )
+    if exif then
+        tokens[0] = params.file -- record file associated with current tokens.
+        tokens['exif'] = exif -- put exif metadata in the token cache (equivalent to calling putToken for each exif value).
+    elseif errm then
+        app:logErr( "Unable to acquire exif metadata needed to support folder/file naming - ^1", errm ) -- other errors may be logged when attempting to use said tokens.
+    else
+        app:logW( "Unable to acquire exif metadata which may be needed to support folder/file naming." )
+    end
+    local nameSpecs = {}
+    tab:appendArray( nameSpecs, foldernameSpec )
+    tab:appendArray( nameSpecs, filenameSpec )
+    tab:appendArray( nameSpecs, videoFoldernameSpec )
+    tab:appendArray( nameSpecs, videoFilenameSpec )
+    --Debug.lognpp( #nameSpecs )
+    for i, v in ipairs( nameSpecs ) do
+        if not v.literal then
+            initToken( params, v.type, unpack( v.field ) ) -- no return values - if token can't be init, a message is logged, and the token is not put.
+        end
+    end
+end
+
+-- called after adding a file to the catalog. Note: if file is being added in place, initFile will *not* have been called first.
+local function initPhoto_default( params )
+    local settings = params.spec.settings or error( "no settings in spec" )
+    local file = params.file or error( "no file" )
+    local photo = params.photo or error( "no photo" )   
+    if tokens[0] == file then -- exif already loaded for file (note: file will actually be "newFile").
+        return
+    elseif settings.importType == 'Add' then -- adding needs new
+        -- Needs all the name specs in spec settings.
+        if settings.initFile then
+            settings.initFile( params )
+        else
+            initFile_default( params ) -- this may be overkill, since it will initialize all filenaming tokens, even though file is not being renamed.
+        end
+        -- for this reason, it's a good idea to eliminate name-specs in settings when 'Add' is the import-type. ###3 this could be enforced, except
+        -- it's possible to take advantage of token subsystem even when adding in place, e.g. for computing common info used for assigning dev-settings & metadata-preset.
+    elseif not str:is( tokens[0] ) then
+        app:error( "exif should be loaded by init-file method" )
+    else
+        -- presently loaded exif should suffice.
+    end
+end
+
+local function initPhoto_custom( params )
+    initPhoto_default( params )
+end
+
+
+local export -- object with requisite export methods.
+local exportSettingsCache = {} -- parsed settings from preset file, so no need to keep reloading..
+
+
+--  function implementing default action to be done after photo imported, which is to export, if user
+--  has configured an export preset to do the post-import exporting..
+local function endPhoto_default( params )
+    local photo = params.photo or error( "no photo" )   
+    local spec = params.spec or error( "no spec" )
+    local import = spec.import or error( "no import in spec" )
+    local settings = spec.settings or error( "no settings in spec" )
+    local exportPresetFiles = settings.exportPresetFiles -- array of references (paths) to existing-but-unloaded export preset files.
+    if tab:isArray( exportPresetFiles ) then -- export-after-import is enabled by-virtue-of an export preset being defined.
+        local fileFormat = photo:getRawMetadata( 'fileFormat' ) or error( "no file format" )
+	    if fileFormat == 'VIDEO' then
+	        app:logE( "File format not supported: ^1", fileFormat )
+	        return
+	    end
+        export = export or Export:new() -- same as "new-dialog" (creates a bare-bones export object, for the methods..).
+        local n = 0
+        for i, exportPresetFile in ipairs( exportPresetFiles ) do
+            if exportSettingsCache[exportPresetFile] == nil then
+                -- reminder: export preset file existence was pre-checked when session was initialized, so no need to re-check here.
+                exportSettingsCache[exportPresetFile] = export:getSettingsFromPreset{ file=exportPresetFile } -- throws error if problems.
+            end
+            local exportSettings = exportSettingsCache[exportPresetFile]
+            if exportSettings then
+            	local session = LrExportSession {
+        	        photosToExport = { photo },
+        	        exportSettings = exportSettings,
+        	    }
+        	    session:doExportOnNewTask() -- fingers crossed.. (meaning: Ottomanic does not check if export is successful, but Lightroom proper should give some indication).
+        	    n = n + 1
+        	else -- never happens
+        	    Debug.pause( "?" )
+        	end
+        end
+        app:logV( "Export of imported photo was initiated - ^1.", str:oneOrMore( n, "export preset", "export presets" ) )
+    else
+        dbgf( "Not exporting after import, since no export preset file is defined." )    	
+    end
+end
+
+-- Custom function for doing special things after photo has been imported, and all other stuff has been done..
+-- by default, this function just does the default thing - customize if desired..
+local function endPhoto_custom( params )
+    endPhoto_default( params )
+end
+
+local kwCache -- must precede session initializer.
+local function initPhoto_folderNamesAsKeywords( params )
+    assert( kwCache, "no kw cache" )
+    assert( lrVerNum >= 4, "'Folder Names As Keywords' requires Lr4 or better" ) -- would rather have this in session initializer, but this is slightly simpler...
+    local final = params.final -- no error if nil or false.
+    if not final then
+        initPhoto_default( params )
+    end
+    local photo = params.photo or error( "no photo" )
+    local file = params.srcFile or ( "no src file" ) -- params.file or error( "no file" )
+    local comp = str:breakdownPath( file )
+    local drive = comp[1]
+    if str:is( drive ) then
+        -- Debug.pause( comp )    
+    else
+        app:logW( "No root (drive) found in '^1' - skipping keyword assignment based on path components", file )
+        return
+    end
+    local retVal -- reminder, nil is NOT the same as boolean false, in this case.
+    for i = 2, #comp - 1 do
+        local v = comp[i]
+        local kw = kwCache[v]
+        if not kw then
+            kw = catalog:createKeyword( v, nil, true, nil, false ) -- nil #1 => no synonyms; true => incl-on-exp; nil #2: top-level (no parent); false => do not return existing.
+            if kw then -- new kw created (can not be added to photo in same catalog update phase).
+                retVal = false -- continue (add to photo in final phase).
+                kwCache[v] = kw -- for future reference.
+            else -- keyword already exists, but we've not got it.
+                kw = catalog:createKeyword( v, nil, true, nil, true ) -- nil #1 => no synonyms; true => incl-on-exp; nil #2: top-level (no parent); true => return existing (NOT supported in Lr3-).
+                if kw then -- got it
+                    photo:addKeyword( kw )
+                    kwCache[v] = kw -- for future reference.
+                else
+                    Debug.pause( "keyword not created, but doesn't exist - hmm..." )
+                end
+                
+            end
+        else
+            photo:addKeyword( kw )
+        end
+    end
+    return retVal
+end
+
+
+local initPhoto_rcStandard = initPhoto_default
+
+-- assigned to initFile member of import settings.
+local function initFile_rcStandard( params )
+    initFile_default( params ) -- init default tokens, if present in filenaming specs.
+    -- compute custom tokens
+    local model = getToken( 'exif', 'Model' )
+    local photogId
+    local cameraId
+    if model == "E950" then -- My first Nikon Coolpix.
+        photogId = "RC"
+        cameraId = "NA"
+    elseif model == "NIKON D300" then -- 2nd Nikon - DSLR.
+        photogId = "RC"
+        cameraId = "NB"
+        local comment = getToken( 'exif', 'UserComment' )
+        if comment == "RDC" then
+            -- me
+        else
+            app:logWarning( "Unable to assure photographer based on user comment '^1' - still: assuming it was me...", str:to( comment ) )
+            --return nil
+        end
+    elseif model == "Canon PowerShot S5 IS" then -- first canon.
+        photogId = "RC"
+        cameraId = "CA"
+    elseif model == "Canon PowerShot G12" then -- 2nd canon.
+        photogId = "RC"
+        cameraId = "CB"
+    elseif model == "DMC-FX33" then -- 1st panasonic.
+        photogId = "RC"
+        cameraId = "PA"
+    elseif model == "FinePix E550" then -- 1st Fuji.
+        photogId = "RC"
+        cameraId = "FA"
+    elseif model == "GR-DV2000" then -- 1st JVR (video).
+        photogId = "RC"
+        cameraId = "JA"
+    elseif model ~= nil then
+        app:logWarning( "Unsupported model: ^1", model )
+        return
+    else
+        app:logWarning( "No model in exif" )
+        return
+    end
+    putToken( 'custom', 'model', model:gsub( " ", "_" ) ) -- substitute underscore for all spaces in exif model.
+    putToken( 'custom', 'photogId', photogId )
+    putToken( 'custom', 'cameraId', cameraId )
+end
+
+-- assigned to initFile member of import settings.
+-- primary purpose is to initialize custom folder/file-naming tokens.
+local function initFile_custom( params )
+    initFile_default( params ) -- init default tokens, if present in filenaming specs.
+    -- compute custom tokens
+    local model = getToken( 'exif', 'Model' )
+    if model ~= nil then
+        model = model:gsub( "Canon", "C" ) -- canon is usually in mixed case.
+        model = model:gsub( "PowerShot", "" ) -- eliminate the "power-shot".
+        model = model:gsub( "NIKON", "N" ) -- note: case sensitive.
+        model = model:gsub( " ", "" ) -- remove spaces.
+    else
+        app:log( "*** No model in exif" )
+        return
+    end
+    putToken( 'custom', 'model', model )
+end
+
+local dummyRawD4 = "X:\\MyPictures\\Special Purpose Photos\\Misc from Other Cameras\\nikon_d4_03.nef"
+-- assigned to initFile member of import settings.
+-- primary purpose is to initialize custom folder/file-naming tokens.
+local function initFile_NikonDf( params )
+    initFile_default( params ) -- init default tokens, if present in filenaming specs.
+    -- compute custom tokens
+    local model = getToken( 'exif', 'Model' )
+    if model ~= nil then
+        if model:find( "Df" ) then
+            model = "ND4f"
+            if fso:existsAsFile( dummyRawD4 ) then
+                local file = params.file or app:callingError( "no file in params" )
+                local spec = params.spec or app:callingError( "no spec in params" )
+                local import = spec.import or app:callingError( "no import in spec" )
+                local ets = import.ets or error( "no ets in import" )
+                ets:addArg( "-tagsFromFile" )
+                ets:addArg( dummyRawD4 ) -- quotes must be omitted session mode.
+                ets:addArg(  file ) -- target handled as param (arg).
+                ets:addArg( "-model" )
+                ets:addArg( "-makernotes" )
+                local r, m, c = ets:execute()
+                if str:is( r ) then -- exiftool responded
+                    local s, m = exifTool:getUpdateStatus( r )
+                    if s then
+                        app:log( "Image: '^1' updated via (equivalent) exiftool command: ^2", file, c )
+                        -- proceed to put model token..
+                    else
+                        app:logWarning( "Exiftool was unable to update image file (^1) due to error: ^2", m )
+                        return
+                    end
+                elseif str:is( m ) then -- errm
+                    app:logWarning( "There was an error exectuing exiftool command: ^1", m )
+                    return
+                else
+                    app:logWarning( "Exiftool did not update image whilst executing command:\n^1", c )
+                    return
+                end
+            else -- ###3 maybe a return value is not such a bad idea.
+                --app:error( "File not found: '^1' - you need to edit advanced settings and correct path of 'dummyRawD4'.", dummyRawD4 )
+                app:logWarning( "File not found: '^1' - you need to edit advanced settings and correct path of 'dummyRawD4'.", dummyRawD4 )
+                return
+            end
+        else
+            model = model:gsub( "Canon", "C" ) -- canon is usually in mixed case.
+            model = model:gsub( "PowerShot", "" ) -- eliminate the "power-shot".
+            model = model:gsub( "NIKON", "N" ) -- note: case sensitive.
+            model = model:gsub( " ", "" ) -- remove spaces.
+        end        
+    else
+        --error( "No model in exif" )
+        app:logWarning( "No model in exif" )
+        return
+    end
+    putToken( 'custom', 'model', model )
+end
+
+local function initSession_default( spec )
+    app:logv( "Initializing session." )
+    lrVerNum = app:lrVersion()
+    saveDir = nil
+    kwCache = {} -- not needed by default, but avoids having non-default session initializer to deal with. ###2 - can another session's operation be stomped on? (only used for folder-names as keywords preset).
+    spec.import.ignorePhotoSet = {}     -- supports dup.detection - since dependent info could change as time marches on, it's re-initialized each session.
+        -- if not willing to live with disqualification for duration of session, don't assign to ignore table.
+    if compareImportBeforeRenamingToOriginalCatalogName or compareImportAfterRenamingToOriginalCatalogName then
+        local file = cat:isOriginalFilenamesInit() -- name suggests boolean but returns file.
+        if file then
+            app:log( "Original filename subsystem is initialized - backed by '^1' - ^2.", file, fso:getFileModificationDateString( file ) )
+        else
+            if compareImportBeforeRenamingToCurrentCatalogName or compareImportAfterRenamingToCurrentCatalogName then
+                app:log( "*** Original filename subsystem is NOT initialized - only current filenames will be taken into consideration when evaluating additional import criteria." )
+            else
+                app:logW( "Original filename subsystem is NOT initialized." )
+            end
+        end
+    end
+end
+
+local function initSession_custom( spec )
+    initSession_default( spec ) -- required to support dynamic custom folder text...
+    -- customize if desired...
+end
+
+local function initSource_default( spec )
+    -- no-op/placeholder
+end
+
+local function initSource_custom( spec )
+    initSource_default( spec ) -- @2/Jan/2013 - does nothing, but in the future?
+end
+
+local initSource_rcStandard = initSource_default
+
+local function initTarget_default( spec )
+    -- no-op/placeholder
+end
+
+local function initTarget_custom( spec )
+    initTarget_default( spec ) -- @2/Jan/2013 - does nothing, but in the future?
+end
+
+local initTarget_rcStandard = initTarget_default
+
+local function endSession_default( spec )
+end
+
+local function endSession_custom( spec )
+    endSession_default( spec ) -- @2/Jan/2013 - does nothing, but in the future?
+end
+
+local endSession_rcStandard = endSession_default
+
+
+
+--   G E T   N E W   F I L E N A M E   F U N C T I O N S
+
+-- default function for rename upon import. OK in all cases where new filename is wholly specified by pre-initialized (and/or literal) tokens.
+local function getNewFilename_default( params )
+    local settings = params.spec.settings or error( "no settings" )
+    local import = params.spec.import or error( "no import in spec" )
+    local nameSpec
+    local ext = params.ext or error( "no ext" )
+    if import:getSupportType( ext ) == 'video' then
+        nameSpec = settings.videoFilenameSpec or settings.filenameSpec or error( "no video filename spec" )
+    else
+        nameSpec = settings.filenameSpec or error( "no filename spec" )    
+    end
+    local basename, errm = getName( nameSpec )
+    if basename then
+        return basename
+    else
+        app:logWarning( errm )
+        return nil
+    end
+end
+
+
+
+--  G E T   I M P O R T   D E S T I N A T I O N   F U N C T I O N S
+
+-- default function for getting import destination folder. OK in all cases when import destination (subfolder) is wholly specified by initialized (and/or literal) tokens.
+-- reminder: OK to include literal path separator tokens to structure import subdirectory tree.
+local function getImportDestination_default( params )
+    --Debug.pause()
+    local spec = params.spec or error( "no spec" )
+    local import = spec.import or error( "no import in spec" )
+    local settings = spec.settings or error( "no settings in spec" )
+    local ext = params.ext or error( "no ext" )
+    local nameSpec
+    if import:getSupportType( ext ) == 'video' then
+        nameSpec = settings.videoFoldernameSpec or settings.foldernameSpec or error( "no video foldername spec" )
+    else
+        nameSpec = settings.foldernameSpec or error( "no foldername spec" )
+    end
+    
+    local subPathOrName = getName( nameSpec )
+    if subPathOrName == nil then
+        app:error( "getName did not return a sub-path or name in getImportDestination_default" )
+    end
+
+    local dirText = considerTargetChange( spec, subPathOrName ) -- if dir-change, fire "dir-change event" (call initTarget), and optionally prompt for dir-text.
+    if str:is( dirText ) then -- default handling is to append custom dir text. If you want it different, you'll have to define a new "non-default" function...
+        if str:is( settings.promptForCustomDirText ) then
+            subPathOrName = str:fmtx( "^1^2", subPathOrName, dirText ) -- append dir-text (user can add underscore or space as desired).
+        else
+            Debug.pause() -- residual from previous settings?
+        end
+    end
+    
+    return subPathOrName
+end
+
+local getImportDestination_rcStandard = getImportDestination_default
+
+
+
+--   B A C K U P   H A N D L E R S
+
+-- this function mostly serves as example/place-holder/template/skeleton:
+-- just makes standard backup copy, but could be customized...
+local function backup_default( params )
+    local backup = params.backup -- backup item (one item/element from backup table in import settings (defined below).
+    --Debug.lognpp( backup ) -- dump contents of backup item to debug log, if advanced debug enabled - which is recommended during test/set-up/experimentation.
+    local name = backup.name or error( "no name" )
+    local folder = backup.folder or error( "no folder" )
+    local file = params.file or error( "no file" )
+    local newFile = params.newFile or error( "no new-file" )
+    local spec = params.spec or error( "no spec" )
+    local settings = spec.settings or error( "no settings" )
+    local import = spec.import or error( "no import" )
+    app:logv( "backup function is re-routing '^1' to use standard/default handling.", name )
+    import:backup( params ) -- standard (default) backup.
+end
+
+local function backup_exp()-- experimental
+    local backup = params.backup -- backup item (one item/element from backup table in import settings (defined below).
+    --Debug.lognpp( backup ) -- dump contents of backup item to debug log, if advanced debug enabled - which is recommended during test/set-up/experimentation.
+    local name = backup.name or error( "no name" )
+    local folder = backup.folder or error( "no folder" )
+    local file = params.file or error( "no file" )
+    local newFile = params.newFile or error( "no new-file" )
+    local spec = params.spec or error( "no spec" )
+    local settings = spec.settings or error( "no settings" )
+    local import = spec.import or error( "no import" )
+    app:logv( "backup function is re-routing '^1' to use standard/default handling.", name )
+    import:backup( params ) -- standard (default) backup.
+end
+
+local function backup_not() -- null backup, faux-backup, won't backup..
+    local backup = params.backup -- backup item (one item/element from backup table in import settings (defined below).
+    local name = backup.name or error( "no name" )
+    app:logv( "Consider deleting '^1' backup - it's using \"No Backup\" which doesn't do any backup.", name )
+end
+
+
+
+--   F O L D E R  &   F I L E N A M E   O P T I O N S
+--
+--  The following tokens are available (by default) to use for folder/filenameSpec_'s
+--  (advanced users can define additional token options)
+--
+--  Standard tokens supported (initToken function has the last word on this):
+--      All Exif Metadata, as returned by exiftool -S
+--      dateTimeOriginal (will be date-time file created if original not in exif)
+--          year
+--          month
+--          day
+--          hour
+--          minute
+--          second
+--      dateTimeNow (current system time - same members as dateTimeOriginal).
+--      dateTimeCreated (file creation timestamp - same members as dateTimeOriginal).
+--      dateTimeModified (file modification timestamp - same members as dateTimeOriginal).
+--      filename (original, sans extension)
+--      folderNum (from folder on card, or exif)
+--      fileNum (from file on card, or exif)
+--      customText_1 (from UI)
+--      customText_2 (from UI)
+--      importNumber (initial value exposed in UI)
+--      sessionItemNum
+--      sessionPhotoNum
+--      sessionVideoNum
+--      sourceItemNum
+--      sourcePhotoNum
+--      sourceVideoNum
+--      targetItemNum
+--      targetPhotoNum
+--      targetVideoNum
+
+-- Default import subfolder is: {year}/{year}-{month}-{day}
+-- windows example: 2012\2012-12-25
+-- mac example: 2012/2012-12-25
+local foldernameSpec_default = {
+    title="YYYY/YYYY-MM-DD", -- you can specify title here, or later (below) - either way... - just a convenience.
+    formats = formats_default, -- this line is redundent, since default formats are in force if not specified: it's here to emphasize a point: you can specify custom formats.
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = app:pathSep() }, -- literal '/' (mac) or '\' (windows) character - path separator.
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+}
+
+-- Filenaming spec for imported file to be same as source (un-renamed) - more specically, it is renamed using original filename token for base, and format-dependent extension.
+local filenameSpec_noRename = {
+    -- no formats required.
+    { field = { 'filename' } },
+}
+
+local filenameSpec_default = filenameSpec_noRename -- default filename - don't rename.
+
+
+
+--   C A N N E D   F O L D E R   A N D   F I L E   N A M I N G   O P T I O N S
+-- (these are just some naming specs I used for testing, or thought you might find useful, or get ideas from - feel free to modify/use/clone...)
+
+-- photos and videos in separate (sibling) folders
+local videoFoldernameSpec_videoSibling = {
+    formats = formats_default,
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal=app:pathSep() },
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+    { literal = '_' },
+    { literal = 'video' },
+}
+
+-- photos and videos in separate folders (video in child folder):
+local videoFoldernameSpec_videoChild = {
+    formats = formats_default,
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal=app:pathSep() },
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+    { literal=app:pathSep() },
+    { literal = 'video' },
+}
+
+-- exercises/demonstrates custom text and sequence numbers.
+local filenameSpec_photoSep = {
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+    { literal = '_PHOTO_' },
+    { field = { 'targetPhotoNum' }, format = '4-digit' },
+}
+
+-- Unique filename for videos, which includes a sequence number not shared by photos.
+local videoFilenameSpec_videoSep = {
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+    { literal = '_VIDEO_' },
+    { field = { 'targetVideoNum' }, format = '4-digit' },
+}
+
+-- Sames as default foldername, except omits the year subdir.
+local foldernameSpec_skipYearDir = {
+    formats = formats_default, -- optional: if using default formats, they need not be specified as part of name spec.
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+}
+
+-- Experimental filename spec - use this when doing import testing if you want.
+local filenameSpec_experimental = {
+    { field = { 'customText_1' } },
+    { literal = '_' },
+    { field = { 'customText_2' } },
+    { literal = '_' },
+    { field = { 'importNumber' }, format = '6-digit' },
+    { literal = '_' },
+    { field = { 'sessionItemNum' }, format = '5-digit' },
+    { literal = '_' },
+    { field = { 'sourceItemNum' }, format = '4-digit' },
+    { literal = '_' },
+    { field = { 'targetItemNum' }, format = '3-digit' },
+}
+
+-- What rc uses (@11/Nov/2012):
+local foldernameSpec_rcStandard = {
+    formats = formats_default, -- this line is redundent, but it doesn't hurt to be clear...
+    { literal='Captured '}, -- subfolder of inbox - moved after editing.
+    { field={'dateTimeOriginal','year'}, format='4-digit' },
+    { literal='-'},
+    { field={'dateTimeOriginal','month'}, format='2-digit' },
+    { literal='-'},
+    { field={'dateTimeOriginal','day'}, format='2-digit' },
+}
+
+-- What rc uses (@11/Nov/2012):
+local filenameSpec_rcStandard = {
+    { field={'dateTimeOriginal','year'}, format='4-digit' },
+    { field={'dateTimeOriginal','month'}, format='2-digit' },
+    { field={'dateTimeOriginal','day'}, format='2-digit' },
+    { type='custom', field={'photogId'} },
+    { field={'dateTimeOriginal','hour'}, format='2-digit' },
+    { field={'dateTimeOriginal','minute'}, format='2-digit' },
+    { field={'dateTimeOriginal','second'}, format='2-digit' },
+    { type='custom', field={'cameraId'} },
+    { field={'fileNum'}, format='4-digit' },
+}
+
+-- This is here for you to customize (as delivered from factory, it will be same default).
+local foldernameSpec_custom = {
+    title="Custom Folder Naming", -- you can specify title here, or later (below) - either way... - just a convenience.
+    formats = formats_default, -- this line is redundent, since default formats are in force if not specified: it's here to emphasize a point: you can define custom formats.
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = app:pathSep() }, -- literal '/' (mac) or '\' (windows) character - path separator.
+    { field = { 'dateTimeOriginal', 'year' }, format = '4-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'month' }, format = '2-digit' },
+    { literal = '-' },
+    { field = { 'dateTimeOriginal', 'day' }, format = '2-digit' },
+}
+
+-- This is here for you to customize...
+local filenameSpec_custom = {
+    title = "Custom File Naming",
+    -- default formats.
+    { field={'dateTimeOriginal','year'}, format='4-digit' },
+    { literal = '-' },   
+    { field={'dateTimeOriginal','month'}, format='2-digit' },
+    { literal = '-' },   
+    { field={'dateTimeOriginal','day'}, format='2-digit' },
+    { literal = '_' },   
+    { field={'dateTimeOriginal','hour'}, format='2-digit' },
+    { literal = '-' },   
+    { field={'dateTimeOriginal','minute'}, format='2-digit' },
+    { literal = '-' },   
+    { field={'dateTimeOriginal','second'}, format='2-digit' },
+    { literal = '_' },   
+    { field={'fileNum'}, format='4-digit' }, -- file-number (original in-camera image number) may be preferred when available, but not always available due to absence of exif metadata... - you can comment this line out if you want, and uncomment the line below instead.
+    --{ field={'importNumber'}, format='4-digit' }, -- sequence number is safer (more universal), and may be preferred... - you can uncomment this out if you want (e.g. above line was commented out).
+    -- see instructions at top of file for how to uncomment/comment-out lines.
+}
+
+-- Similar to original _custom filename spec, except condensed.
+local filenameSpec_dateTimeFileNumCondensed = {
+    title = "Date-time / File-number (condensed)",
+    -- default formats.
+    { field={'dateTimeOriginal','year'}, format='2-digit' },
+    { field={'dateTimeOriginal','julianDay'}, format='3-digit' },
+    { literal = '-' },   
+    { field={'dateTimeOriginal','hour'}, format='2-digit' },
+    { field={'dateTimeOriginal','minute'}, format='2-digit' },
+    { field={'dateTimeOriginal','second'}, format='2-digit' },
+    { literal = '_' },   
+    { field={'fileNum'}, format='4-digit' }, -- file-number (original in-camera image number) may be preferred when available, but not always available due to absence of exif metadata... - you can comment this line out if you want, and uncomment the line below instead.
+    --{ field={'importNumber'}, format='4-digit' }, -- sequence number is safer (more universal), and may be preferred... - you can uncomment this out if you want (e.g. above line was commented out).
+}
+
+
+
+
+--   C U S T O M   I M P O R T   D E V E L O P   A D J U S T M E N T S
+
+--  default (baseline/universal) develop adjustments - when applying them, to raw.
+local devAdj_raw_default = {
+	AutoLateralCA = 1,
+--	CameraProfile = "Your favorite profile", -- uncomment this line if you have a preferred import camera profile.
+	EnableCalibration = true,
+	EnableLensCorrections = true,
+	LensProfileEnable = 1,
+	LensProfileSetup = "LensDefaults",
+	ColorNoiseReduction = 25,
+	ColorNoiseReductionDetail = 50,
+	EnableDetail = true,
+    SharpenEdgeMasking = 0,
+--	WhiteBalance = 'Custom', - so temp/tint adjustments need no settling time after import. *** Do not uncomment this line: it's here as a reminder.
+}
+
+-- rc baseline adjustments are formed by super-imposing my own default preferences on the universal baseline defaults.
+local devAdj_raw_rcStandard = tab:mergeSets( devAdj_raw_default, {
+	CameraProfile = "Nikon D300 Adobe Standard (RC Debright +CC)",
+	ColorNoiseReductionDetail = 65,
+	LuminanceNoiseReductionContrast = 30,
+	LuminanceNoiseReductionDetail = 80,
+--	WhiteBalance = 'Custom', - so temp/tint adjustments need no settling time after import; *** WhiteBalance adjustment MUST be deferred until the grand finale.
+})
+
+-- Nikon D300 lookup tables for translating camera settings to Lr develop adjustments.
+-- (these can be used for any Nikon which supports the same camera settings as D300).
+-- left side is the value of a camera setting, from exif, with spaces squeezed out (exiftool -S format).
+-- right side is corresponding Lr develop adjustments to make - you can disect a lrtemplate file, or xmp sidecar to see which develop adjustments are possible,
+-- or call Debug.lognpp( catalog:getTargetPhoto():getDevelopSettings() ) -- to dump develop settings of most selected photo to debug logger for inspection.
+
+-- Camera setting: Picture Control Name
+local nd300CameraProfile = {
+    ["Neutral"] = { CameraProfile="Camera Neutral v4" },
+    ["Standard"] = { CameraProfile="Camera Standard v4" },
+    ["Portrait"] = { CameraProfile="Camera Portrait v4" },
+    ["Landscape"] = { CameraProfile="Camera Landscape v4" },
+    ["Vivid"] = { CameraProfile="Camera Vivid v4" },
+}
+
+-- Camera setting: Active D-Lighting
+local nd300ActiveDLighting = { -- Active D-Lighting (not fine-tuned, since I don't personally use this feature).
+    ["Low"] = { Exposure2012=.1, Contrast2012=-5, Highlights2012=-20, Shadows2012=20, Clarity2012=3, Blacks2012=-5, Whites2012=5, Vibrance=3, Saturation=1 },
+    ["Normal"] = { Exposure2012=.2, Contrast2012=-10, Highlights2012=-30, Shadows2012=30, Clarity2012=6, Blacks2012=-10, Whites2012=10, Vibrance=6, Saturation=2 },
+    ["High"] = { Exposure2012=.3, Contrast2012=-15, Highlights2012=-40, Shadows2012=40, Clarity2012=9, Blacks2012=-15, Whites2012=15, Vibrance=9, Saturation=3 },
+    ["ExtraHigh"] = { Exposure2012=.5, Contrast2012=-25, Highlights2012=-50, Shadows2012=50, Clarity2012=12, Blacks2012=-20, Whites2012=20, Vibrance=15, Saturation=5 },
+}
+
+-- Nikon D300 ISO-based detail settings.
+-- consider adapting these for your camera(s) and your taste.
+-- Note: these generally only include the detail settings that are different for different ISOs.
+--[[ *** these work fine, but presently using interpolation scheme below.
+local nd300IsoDetails = {
+    { -- 1 ISO 100-200
+    	LuminanceSmoothing = 0,
+    	SharpenDetail = 20,
+    	SharpenRadius = 1.1,
+    	Sharpness = 35,
+    },
+    { -- 2 ISO 201-400
+		LuminanceSmoothing = 5,
+		SharpenDetail = 15,
+		SharpenRadius = 1.1,
+		Sharpness = 37,
+	},
+	{ -- 3 ISO 401-800
+		LuminanceSmoothing = 7,
+		SharpenDetail = 10,
+		SharpenRadius = 1.1,
+		Sharpness = 40,
+	},
+	{ -- 4 ISO 801-1600
+		LuminanceSmoothing = 10,
+		SharpenDetail = 5,
+		SharpenRadius = 1.1,
+		Sharpness = 42,
+	},
+	{ -- 5 ISO 1601-3200
+		LuminanceSmoothing = 15,
+		SharpenDetail = 0,
+		SharpenRadius = 1.2,
+		Sharpness = 45,
+	},
+	{ -- 6 ISO 3201-6400
+		LuminanceSmoothing = 20,
+		SharpenDetail = 0,
+		SharpenRadius = 1.2,
+		Sharpness = 50,
+	},
+}
+--]]
+-- interpolation table:
+local nd300IsoDetailsInterp = { -- keys are iso values, adjustments are interpolated (linearly).
+    { key=100, adj={ LuminanceSmoothing=0, SharpenDetail=20, SharpenRadius=1.0, Sharpness=35 } },
+    { key=200, adj={ LuminanceSmoothing=0, SharpenDetail=15, SharpenRadius=1.1, Sharpness=40 } },
+    { key=3200, adj={ LuminanceSmoothing=15, SharpenDetail=0, SharpenRadius=1.2, Sharpness=45 } },
+    { key=6400, adj={ LuminanceSmoothing=20, SharpenDetail=0, SharpenRadius=1.3, Sharpness=50 } },
+}
+
+-- Canon G12 ISO-based detail settings.
+-- massage to taste...
+--[[ *** these work fine, but presently using interpolation scheme below.
+local cg12IsoDetails = {
+    { -- 1 ISO 80-100
+		LuminanceSmoothing = 0,
+		SharpenDetail = 20,
+		SharpenRadius = 1,
+		Sharpness = 30,
+    },
+    { -- 2 ISO 101-200
+		LuminanceSmoothing = 5,
+		SharpenDetail = 15,
+		SharpenRadius = 1,
+		Sharpness = 32,
+	},
+    { -- 3 ISO 201-400
+		LuminanceSmoothing = 7,
+		SharpenDetail = 10,
+		SharpenRadius = 1,
+		Sharpness = 35,
+	},
+    { -- 4 ISO 401-800
+		LuminanceSmoothing = 9,
+		SharpenDetail = 5,
+		SharpenRadius = 1,
+		Sharpness = 40,
+	},
+    { -- 5 ISO 801-1600
+		LuminanceSmoothing = 15,
+		SharpenDetail = 0,
+		SharpenRadius = 1.1,
+		Sharpness = 45,
+	},
+    { -- 6 ISO 1600-3200
+		LuminanceSmoothing = 20,
+		SharpenDetail = 0,
+		SharpenRadius = 1.2,
+		Sharpness = 50,
+	},
+}
+--]]
+-- interpolation table:
+local cg12IsoDetailsInterp = { -- keys are iso values, adjustments are interpolated (linearly).
+    { key=80, adj={ LuminanceSmoothing=0, SharpenDetail=20, SharpenRadius=.8, Sharpness=30 } },
+    { key=100, adj={ LuminanceSmoothing=0, SharpenDetail=15, SharpenRadius=.8, Sharpness=35 } },
+    { key=1600, adj={ LuminanceSmoothing=20, SharpenDetail=0, SharpenRadius=1, Sharpness=40 } },
+    { key=3200, adj={ LuminanceSmoothing=25, SharpenDetail=0, SharpenRadius=1.2, Sharpness=45 } },
+}
+
+-- Get adjustments from interpolation table, based on key value (e.g. iso).
+local function getAdjInterp( tbl, keyVal )
+    -- check for min
+    if keyVal <= tbl[1].key then
+        return tbl[1].adj
+    end
+    local max -- in case of max
+    -- traverse table starting with 2nd entry.
+    for i = 2, #tbl do
+        local v = tbl[i]
+        if keyVal < v.key then -- key value is in between, warranting interpolation.
+            local v2 = tbl[i-1].adj -- get adjusment corresponding to previous table entry.
+            -- declare table to contain interpolated adjustments.
+            local adj = {}
+            -- compute interpolated adjustments for each adjustment member:
+            for k, v1 in pairs( v.adj ) do
+                adj[k] = ( v1 + v2[k] ) / 2
+            end
+            -- return interpolated adjustments to calling context.
+            return adj
+        elseif keyVal == v.key then
+            -- key value matches table exactly, return un-interpolated adjustments.
+            return v.adj
+        else
+            -- save adjustments corresponding to maximum key value, in case no match is found.
+            max = v.adj
+        end
+    end
+    -- return maximum value if spun past the last entry without a match.
+    return max
+end
+
+--  RC Standard for applying develop adjustments/presets based on model number.
+local function applyDevelopPresets_rcStandard( params )
+    local spec = params.spec or error( "no spec" )
+    local photo = params.photo or error( "no photo" )
+    local file = params.file or error( "no file" )
+    local settings = spec.settings or error( "no settings" )
+    local import = spec.import or error( "no import" )
+    local ext = LrPathUtils.extension( file )
+    local supportType = import:getSupportType( ext ) -- raw, rgb, or video.
+    app:logv( "Considering application of develop presets to ^1 file", supportType )
+    
+    -- Note: exif now loaded by init-photo or get-new-file-path function.
+    local exif = tokens['exif'] -- could use get-token in here, but...
+    if exif == nil then
+        app:error( "Exif metadata not initialized, import session: '^1'", import:getSessionName() )
+    end
+    
+    local iso = num:numberFromString( exif['ISO'] )
+    local model = exif['Model']
+    local cameraId = getToken( 'custom', 'cameraId' )
+    local devAdj = {} -- computed import develop adjustments
+    -- function to add arbitrary develop adjustments
+    local function addDevAdj( adj )
+        tab:addItems( devAdj, adj )
+    end
+    -- function to add camera emulation develop adjustments
+    local function addCameraEmuAdj( settingName, adjLookup )
+        local setting = exif[settingName]
+        if setting ~= nil then
+            local adj = adjLookup[setting]
+            if adj ~= nil then
+                tab:addItems( devAdj, adj )
+                app:logV( "Applying develop settings corresponding to '^1: ^2'", settingName, setting )
+            else
+                app:logV( "*** No develop adjustments corresponding to '^1: ^2'", settingName, setting )
+            end
+        else
+            app:logWarning( "No setting named '^1'", settingName )
+        end
+    end
+    -- add standard raw adjustments
+    if supportType == 'raw' then
+        addDevAdj( devAdj_raw_rcStandard )
+    end
+    local presetName -- to support preset-based iso-compensation adjustments (no longer used in rc standards, but maintained for example).
+    -- add model/iso-based adjustments
+    if model then
+        local _model = LrStringUtils.lower( model )
+        if _model:find( 'nikon' ) then
+            if supportType == 'raw' then
+                if settings.emulateCameraSettings then
+                    addCameraEmuAdj( 'PictureControlName', nd300CameraProfile ) -- may work well enough for other models, but not tested.
+                    addCameraEmuAdj( 'ActiveD-Lighting', nd300ActiveDLighting ) -- ditto.
+                end
+                if iso ~= nil then
+                    if iso < 100 then
+                        app:logWarning( "iso lower than expected: ^1 (handling as 100)", iso )
+                        iso = 100 -- redundent but strangely comforting...
+                    elseif iso > 6400 then
+                        app:logWarning( "iso higher than expected: ^1 (handling as 6400)", iso )
+                        iso = 6400 -- redundent but strangely comforting...
+                    end
+                    local adj = getAdjInterp( nd300IsoDetailsInterp, iso ) -- get interpolated adjustments, based on ISO.
+                    addDevAdj( adj )
+                else
+                    app:logv( "No iso in exif - skipping Nikon ISO-range-based adjustments" )
+                end
+            else
+                -- dont apply such adjustments to already baked jpegs.
+            end
+        elseif _model:find( "powershot" ) then
+            if supportType == 'raw' then
+                -- not emulating canon camera settings
+                if iso ~= nil then
+                    if iso < 80 then
+                        app:logWarning( "iso lower than expected: ^1 (handling as 80)", iso )
+                        iso = 80 -- redundent but strangely comforting...
+                    elseif iso > 3200 then
+                        app:logWarning( "iso higher than expected: ^1 (handling as 3200)", iso )
+                        iso = 3200 -- redundent but strangely comforting...
+                    end
+                    local adj = getAdjInterp( cg12IsoDetailsInterp, iso ) -- get interpolated adjustments, based on ISO.
+                    addDevAdj( adj )
+                else
+                    app:logv( "No iso in exif - skipping G12 ISO-range-based adjustments" )
+                end
+            else
+                -- not applying to jpegs.
+            end
+        else
+            app:logWarning( "cant find model '^1' - no dev preset applied.", model )
+            return
+        end
+    else
+        app:logWarning( "no model in exif" )
+        return
+    end
+    if tab:isNotEmpty( devAdj ) then
+        --Debug.lognpp( devAdj )
+        --Debug.showLogFile()
+        app:logv( "Applying (computed) import develop adjustments" )
+        developSettings:adjustPhotos( { photo }, str:fmtx( "Import Develop Adjustments (^1) ISO ^2", cameraId, iso ), devAdj ) -- Uses plugin preset.
+        app:logv( "applied" )
+    else
+        app:logv( "There are no (computed) import adjustments to apply." )
+    end
+    -- baseline default(s)
+    if params.spec.settings.devPresets then -- checking for presets is unnecessary, but avoids confusing log messages.
+        import:applyDevelopPresets( params ) -- apply dev presets in default manner - returns nothing: either works or throws an error.
+        app:logv( "Applied indiscriminate/baseline user develop preset(s)." )
+    else
+        app:log( "Not applying any indiscriminate user develop presets." )
+    end
+    -- iso based default, as preset - no longer used, but works fine.
+    --[[ *** save for example - one can use preset-based iso-range defaults, or set them up in this file: user's choice.
+        if presetName then -- user preset.
+            app:logv( "Applying (iso-based) develop preset ^1", presetName )
+            local preset = developSettings:getUserPreset( presetName )
+            if preset then
+                photo:applyDevelopPreset( preset )
+                app:logv( "Applied develop preset ^1", presetName )
+            else
+                app:logWarning( "Preset not found: ^1", presetName )
+            end
+        else
+            app:logv( "No iso-based preset found to apply." )
+        end
+    --]]
+end
+
+
+
+--   F U N C T I O N S   S U P P O R T I N G   C U S T O M   M E T A D A T A   A S S I G N M E N T
+
+-- this function mostly serves as example/place-holder/template/skeleton:
+-- just does standard metadata preset assignment, but intelligence could be added...
+local function applyMetadataPresets_default( params )
+    app:logv( "metadata preset function from advanced settings is being called" )
+    import:applyMetadataPresets( params ) -- just apply as defined, no intelligence.
+end
+
+-- reserved for future implementation of rc-standard:
+local function applyMetadataPresets_rcStandard( params )
+    app:logv( "rc Standard metadata preset function is re-routing to use standard handling." )
+    local exif = tokens['exif'] -- get-token not needed.
+    assert( exif, "no exif" ) -- just checkin'...
+    import:applyMetadataPresets( params )
+end
+
+
+
+--   F U N C T I O N S   S U P P O R T I N G   C U S T O M   K E Y W O R D   A S S I G N M E N T
+
+-- this function mostly serves as example/place-holder/template/skeleton:
+-- just does standard keyword assignment, but intelligence could be added...
+local function applyKeywords_default( params )
+    app:logv( "keyword assignment function from advanced settings is being called" )
+    import:applyKeywords( params )
+end
+
+-- reserved for future implementation of rc-standard:
+local function applyKeywords_rcStandard( params )
+    app:logv( "keyword assignment function from advanced settings is being called" )
+    local exif = tokens['exif'] -- get-token not needed.
+    assert( exif, "no exif" ) -- just checkin'...
+    import:applyKeywords( params )
+end
+
+
+
+--   G R A N D   F I N A L E   F U N C T I O N S
+
+-- called after everything else is done (including source file deletion, and card ejection) - last chance to wrap-up & clean-up...
+-- Note: prompted param means user was presented with a dialog box after adding all photos.
+-- If prompted, no need to wait before applying custom white balance, otherwise, wait...
+local function grandFinale_rcStandard( params )
+    return app:pcall{ name="Grand Finale", async=false, main=function( icall )
+        local record = params.record or error( "no record" )
+        local spec = params.spec or error( "no spec" )
+        local call = spec.call or error( "no call" )
+        local prompted = params.prompted
+        if prompted == nil then
+            app:callingError( "set prompted" )
+        end        
+        local photos = {}
+        local videos = {}
+        if #record > 0 then
+            for i, rec in ipairs( record ) do
+                if rec.photo:getRawMetadata( 'fileFormat' ) ~= 'VIDEO' then
+                    photos[#photos + 1] = rec.photo
+                else
+                    --Debug.pause( 'video' )
+                    videos[#videos + 1] = rec.photo
+                end
+            end
+            if #photos > 0 then
+                app:logv( "Proceeding to make final adjustments to photos." )
+            elseif #videos > 0 then
+                app:log( "^1 (no photos) - no final adjustments are made to videos.", str:nItems( #videos, "videos" ) )
+                return
+            else
+                app:logWarning( "No photos and no video imports were recorded." )
+                return
+            end
+            if not prompted then
+                call:setCaption( "Dialog box needs your attention..." )
+                local button = app:show{ confirm="Set white balance to custom?",
+                    buttons = { dia:btn( "Yes", 'ok' ), dia:btn( "No", 'cancel', false ) }
+                }
+                if button == 'ok' then
+                    call:setCaption( "Grand Finale: White Balance -> Custom" )
+                else
+                    -- caption cleaned up upon return
+                    return
+                end
+            end
+        else
+            return
+        end
+        assert( #photos > 0, "no photos" )
+        local s, m = cat:update( 30, "Grand Finale", function( context, phase )
+            -- all final adjustments are directed at photos, not videos:
+            local s, m = developSettings:adjustPhotos( photos, "White Balance - Custom", { WhiteBalance='Custom' }, 10 )
+            if not s then
+                app:error( m ) -- abort catalog transaction.
+            end
+        end )
+        if s then
+            app:log( "Final adjustments made." )
+        else
+            app:error( "Unable to make final adjustments - ^1", m ) -- propagated to return code, since wrapped & synchronous.
+        end
+    end }
+end
+
+-- grand-finale, by-default, doesn't do anything, except illustrate successful return values.
+local function grandFinale_default( params )
+    app:logv( "By default, the grand-finale function does nothing." )
+    return true, nil
+end
+
+local function grandFinale_custom( params )
+    -- return grandFinale_rcStandard( params ) -- set white-balance to custom, to make ready for Cookmarks.
+    return grandFinale_default( params ) -- @2/Jan/2013 - does nothing, but in the future?
+end
+
+
+
+--   V I D E O   T R A N S C O D I N G
+
+-- reminder: ffmbc.exe (windows) and ffmpeg app (mac) are included with plugin, and the only factory-default video transcoder uses ffmpeg.
+-- feel free to define your own video transcoding function if you have a preferred app for it.
+-- you'll see below an example of how to assign video transcoding functions to certain extensions.
+local ffmpeg
+-- transcode video, or toss an error.
+local function transcodeVideo( params )
+    local fileIn = params.file or error( "no file" )
+    local fileOut = params.newFile or error( "no new file" )
+    local extOut = LrPathUtils.extension( fileOut )
+    local spec = params.spec or error( "no spec" )
+    local call = spec.call or error( "no call in spec" )
+    local xtbl = params.transcodeTable or error ( "no transcode table" )
+    local optionsIn
+    local optionsOut
+    if xtbl.optionsIn then
+        optionsIn = xtbl.optionsIn.." " -- post-space
+    else
+        optionsIn = ""
+    end
+    -- pre-spaces.
+    if xtbl.optionsOut then
+        optionsOut = " "..xtbl.optionsOut
+    else
+        optionsOut = " -sameq -y" -- output quality same as input, overwrite without asking. Implies VBR. space prefix.
+    end
+    local cap = call:setCaption( "Transcoding video to ^1", extOut )
+    app:logV( "Transcoding video to '^1'.", extOut )
+    local dirOut = LrPathUtils.parent( fileOut )
+    if ffmpeg == nil then
+        ffmpeg = Ffmpeg:new() -- no need for process-exe-change..., but add to plugin generator ###1.
+        local usable, maybe = ffmpeg:isUsable()
+        if usable then
+            if maybe then
+                app:log( maybe )
+            end
+        else
+            app:error( "ffmpeg not usable - ^1", maybe )
+        end
+    end
+    local cmdp = str:fmtx( '^1-i "^2"^3', optionsIn, fileIn, optionsOut ) -- there will be spaces where needed.
+    local s, m, c = fso:assureDir( dirOut ) -- ffmpeg won't create output directories, at least not without explicit parameter, if then.
+    if s then
+        if c then
+            app:logV( "Target directory created." )
+        else
+            app:logV( "Target directory already exists." )
+        end
+    elseif m then
+        app:error( m )
+    else
+        error( "no m" )
+    end
+    local sts, cmdOrMsg, resp = ffmpeg:executeCommand( cmdp, { fileOut } ) 
+    if sts then
+        app:log( "Converted '^1' to '^2' using command: ^3", fileIn, fileOut, cmdOrMsg )
+    else
+        app:error( "Unable to convert '^1' to '^2' due to error: ^3. Command-line app response: ^4", fileIn, fileOut, cmdOrMsg or "?", resp or "" )
+    end
+    call:setCaption( cap )
+    -- nothing need be returned.
+end
+
+
+
+--   I M P O R T   E X T E N S I O N S
+
+--[[
+        Specifies which files should be imported (which extensions) - files with other extensions will be ignored.
+        
+        *** Instructions:
+        
+        Make sure your raw file extensions are present in the table below (case sensitive).
+        If not, then:
+        
+            1. add them...
+            2. let me know, so I can add them too.
+            
+        Also: remove any extensions if they are causing auto-import errors. - and please let me know about that too.
+--]]
+
+local allRaw = {
+    -- raw files, from wikipedia, upper case:
+    ["3FR"] = true,
+    ["ARI"] = true,
+    ["ARW"] = true,
+    ["A7R"] = true, -- new @Lr5.3
+    ["BAY"] = true,
+    ["CRW"] = true,
+    ["CR2"] = true,
+    ["CAP"] = true,
+    ["DCS"] = true,
+    ["DCR"] = true,
+    ["DNG"] = true,
+    ["DRF"] = true,
+    ["EIP"] = true,
+    ["ERF"] = true,
+    ["FFF"] = true,
+    ["IIQ"] = true,
+    ["K25"] = true,
+    ["KDC"] = true,
+    ["MEF"] = true,
+    ["MOS"] = true,
+    ["MRW"] = true,
+    ["NEF"] = true,
+    ["NRW"] = true,
+    ["OBM"] = true,
+    ["ORF"] = true,
+    ["PEF"] = true,
+    ["PTX"] = true,
+    ["PXN"] = true,
+    ["R3D"] = true,
+    ["RAF"] = true,
+    ["RAW"] = true,
+    ["RWL"] = true,
+    ["RW2"] = true,
+    ["RWZ"] = true,
+    ["SR2"] = true,
+    ["SRF"] = true,
+    ["SRW"] = true,
+    ["X3F"] = true,
+}
+local allRgb = { -- complete, I think.
+    -- non-raw still-image files, both cases:
+    ["TIF"] = true,
+    ["TIFF"] = true,
+    ["JPG"] = true,
+    ["JPEG"] = true,
+    ["PSD"] = true,
+    ["GIF"] = true, -- auto-detected and handled via IM/convert.
+}
+if app:lrVersion() >= 5 then
+    allRgb["PNG"] = true
+end
+-- set to boolean true for support, or transcode table w/function.
+local allVideo = {
+    -- video, from http://helpx.adobe.com/lightroom/kb/video-support-lightroom-4-3.html
+    ["MOV"] = true,
+    ["M4V"] = true,
+    ["MP4"] = true,
+    ["MPE"] = true,
+    ["MPEG"] = true,
+    ["MPG4"] = true,
+    ["MPG"] = true,
+    -- documentation for ffmbc (windows) - http://jpdelinux.wordpress.com/2011/05/20/ffmbc-documentation/
+    -- documentation for ffmpeg (mac) - http://ffmpeg.org/ffmpeg.html
+    -- example for how to assign video transcoder to avi extension:
+    --["AVI"] = { targExt="mp4", transcoder=transcodeVideo, optionsIn=nil, optionsOut="-sameq -y" }, -- instead of 'true', assign a table specifying target extension and transcode function - additional command line parameters for input file and/or output file (as string) are optional: set corresponding options member to nil or "" to use default parameters, which will be same quality output as input, and overwrite output file unconditionally.
+    ["AVI"] = true, -- if you want to transcode AVI files to MP4, then comment out this line, and uncommment the one above.
+    ["MTS"] = true,
+    ["3GP"] = true,
+    ["3GPP"] = true,
+    ["M2T"] = true,
+    ["M2TS"] = true,
+}
+local importAll = { raw=allRaw, rgb=allRgb, video=allVideo }
+local importRaw = { raw=allRaw, rgb={}, video={} }
+local importRgb = { raw={}, rgb=allRgb, video={} }
+local importPhotos = { raw=allRaw, rgb=allRgb, video={} }
+local importVideo = { raw={}, rgb={}, video=allVideo }
+-- experimental import extensions - edit/use these for testing...
+local importExp = {
+    raw = { ["NEF"]=true, ["CR2"]=true },
+    rgb = {},
+    video = {},
+}
+
+
+
+-- function called to validate convert-to-dng options.
+local function validateDngConverterOptions( view, value )
+    local s, m = false
+    if str:is( value ) then
+        local cr1, cr2 = value:find( "-cr", 1, true )
+        if cr1 then
+            local verString
+            local nxt1, nxt2 = value:find( " ", cr2 + 1 )
+            if nxt1 then
+                local ver = value:sub( cr2 + 1, nxt1 - 1 )
+                if str:is( ver ) then
+                    verString = ver
+                else
+                    m = "version number must follow -cr with no leading spaces"
+                end
+            else
+                verString = value:sub( cr2 + 1 )
+            end
+            if str:is( verString ) then
+                local number = num:numberFromString( verString )
+                if number then
+                    s = true
+                else
+                    m = str:fmtx( "cr version not valid number: '^1'", verString )
+                end
+            elseif not m then
+                m = "need cr version"
+            end
+        else
+            m = "-cr{version} required"
+        end
+    else
+        s = true
+    end
+    if s then
+        return true, value
+    else
+        return false, value, m or "unarticulated trouble"
+    end
+end
+
+
+
+
+
+--  U I   D E F I N I T I O N S . . .
+
+--[[
+        Import Customization Sets.
+        
+        These appear in the drop-down in the UI.
+        
+        Some settings have parallel in import dialog box, some do not.
+--]]
+_t[#_t + 1] = { id='importCustomSets', friendly="Import Settings", dataType='array', viewType='popup',
+    viewOptions = {
+        tooltip = "import customization settings",
+    },
+    elem = {
+        --   B A S I C
+        
+        --{ viewType='separator', title = "Basic" },
+        { viewType='tab', viewOptions={ title="Basic", identifier='basic' } },
+        
+        { id='importExt', friendly="Import File Types", dataType='proxy', viewType='popup',
+            init = { -- reminder: view-options--items does not work for proxy popup - reasonable, since function values can't be stored in prefs,
+                -- so items must be created.
+                { title="All", value=importAll, default=true },
+                { title="Raw", value=importRaw },
+                { title="RGB", value=importRgb },
+                { title="Video", value=importVideo },
+                { title="Photos", value=importPhotos },
+                { title="Experimental", value=importExp },
+            },
+        },
+
+        { id='denyIfDupFilename', friendly="Do not import unless filename is unique", dataType='boolean', default=false, -- view-type = default.
+            viewOptions={ tooltip="Enabling this will assure all filenames in catalog remain unique - a good thing to maintain if you've got it going already, but may be a bad thing if you don't!\n \nThere will be a slight delay during startup as Ottomanic Importer gets filenames together.." },
+        },
+
+        { id='importCriteria', friendly="Additional Import Criteria", dataType='proxy', viewType='popup', show=true,
+            viewOptions={ tooltip="If checked, custom criteria of prospective import file must match in order to be considered a duplicate; if unchecked custom criteria will not be a determining factor.\n \n*** There will be a substantial delay during startup when using this feature, since it has to go through all photos in catalog and gather requisite information.." },
+            init = { -- reminder: view-options--items does not work for proxy popup - reasonable, since function values can't be stored in prefs,
+                -- so items must be created.
+                { title="None", value=nil, default=true },
+                { title="Customizable Duplicate File Detection", value=importCriteria_custom },
+            },
+        },        
+
+        { id='importType', friendly="Import Transfer", dataType='string', viewType='popup',
+            viewOptions = {
+                items={ { title="Add", value="Add", default=true }, { title="Copy", value="Copy" }, { title="Move", value="Move" } },
+            }
+        },
+        
+        { id='importDestFolderPath', friendly="Import Destination Folder", dataType='string', viewType='browsableFolder', default=LrPathUtils.child( LrPathUtils.getStandardFilePath( 'home' ), "Pictures Imported in Lightroom" ),
+            viewOptions={ tooltip="Copy/Move imports will go here, or to a subfolder of here." },
+        },
+        
+        { id='foldernameSpec', friendly="Photo Folder Naming", dataType='proxy', viewType='popup',
+            init = {
+                { title=foldernameSpec_custom.title or "Custom", value=foldernameSpec_custom, default=true },
+                { title="No Year Subfolder", value=foldernameSpec_skipYearDir },
+                { title="rc Standard", value=foldernameSpec_rcStandard },
+            }
+        },
+
+        { id='filenameSpec', friendly="Photo File Naming", dataType='proxy', viewType='popup',
+            init = {
+                { title=filenameSpec_custom.title or "Custom", value=filenameSpec_custom, default=true },
+                { title=filenameSpec_dateTimeFileNumCondensed.title, value=filenameSpec_dateTimeFileNumCondensed },
+                { title="rc Standard", value=filenameSpec_rcStandard },
+                { title="Experimental", value=filenameSpec_experimental },
+                { title="Distinguish Photos", value=filenameSpec_photoSep },
+                { title="No Rename", value=filenameSpec_noRename },
+            }
+        },
+
+        { id='extCase', friendly="Extension Case", dataType='string', viewType='popup',
+            viewOptions = {
+                items={ { title="Same Case", value="Same Case", default=true }, { title="Upper Case", value="Upper Case" }, { title="Lower Case", value="Lower Case" } },
+            }
+        },
+
+        { id='backups', friendly="Backups", dataType='array', viewType='popup', whole=true, show=true,
+            elem = { -- desribes one or more fields in an array element.
+                { id='name', friendly="Name", dataType='string', viewType='string' },
+                { id='folder', friendly="Path", dataType='string', viewType='browsableFolder' },
+                { id='handler', friendly="Handler", dataType='proxy', viewType='popup',
+                    -- note: items not working as view-option - the backup function is being executed!
+                    -- shouldn't need data descriptor if only one value?
+                    init = { -- dangerously similar having init w/title-value and the plural.
+                        { title="Default", value=backup_default, default=true },
+                        { title="Experimental", value=backup_exp },
+                        { title="No Backup", value=backup_not },
+                    },
+                },
+            },
+            init = {
+                { title="Primary", values={ name="Backup", folder=LrPathUtils.child( LrPathUtils.getStandardFilePath( 'home' ), "Pictures - Backup" ), handler=backup_default }, default=true },
+                -- note: handler here is not overriding default above, so to avoid having 2 backup locations, since unaware users might not catch it for a while, 'Secondary' backup is commented out by default.
+                -- { title="Secondary", values={ name="Aux Backup", folder=LrPathUtils.child( LrPathUtils.getStandardFilePath( 'documents' ), "Pictures - Aux Backup" ), handler=backup_exp } },
+            },
+        },
+        
+        { id='developPresetNames', friendly="Develop Presets", dataType='array', viewType='devPresetChooser', default='' },
+        { id='metadataPresetNames', friendly="Metadata Presets", dataType='array', viewType='metaPresetChooser', default='' },
+        { id='keywords', friendly="Add Keywords", dataType='array', viewType='keywordChooser', checkExistence=true, default='' },
+        
+        { id='exportPresetNames', friendly="Export After Import", dataType='array', viewType='exportPresetChooser', default='',
+            viewOptions = {
+                tooltip = "If export presets entered here, imported file will be exported after it's been added to catalog, and all the other things have been done like applied develop presets, metadata presets, and added keywords.\n \n*** Multiple exports are supported, but \"export filters\" (post-process actions) defined in export presets will *not* be honored (sorry: blame Adobe not me).",
+            },
+        },
+        { id='deleteCopiedFileSourcesAfterImport', friendly="Delete After Import", dataType='string', viewType='popup',
+            viewOptions = {
+                tooltip = "Opportunity only presented if 'Import Behavior' is 'Copy' (or 'Copy as DNG') - I recommend setting this to 'Ask'. If you never want deletion after import, then 'No'; and if you must avoid the pre-prompt, consider 'Yes'.",
+                items = {
+                    { title="Ask", value='ask', default=true },
+                    { title="Yes", value='yes' },
+                    { title="No", value='no' },
+                },
+            },
+        },
+        { id='ejectCards', friendly="Eject Cards", dataType='boolean', default=false, supported=WIN_ENV,
+            viewOptions = { tooltip = "check this box to have cards ejected after files are imported; uncheck box for said cards to remain mounted after import complete." },
+        },
+        
+
+
+        --   E X T R A S
+        
+        --{ viewType='separator', title = "Extras" },
+        { viewType='tab', viewOptions={ title="Extras", identifier='extras' } },
+        
+        { id='promptForCustomDirText', friendly="Prompt for Custom Folder Text", dataType='string', viewType='popup',
+            --constraints={ { title='Once per Session', value='once' }, { title='Every New Folder', value='more' }, { title='No', value='' } } },
+            viewOptions={ tooltip="prompt for custom folder text...", -- note: no need for init when popup value is string.
+                items={ { title='No', value='', default=true }, { title='Once per Session', value='once' }, { title='Every New Folder', value='more' } },
+            },
+        },
+        
+        { id='removeKeywords', friendly="Remove Keywords", dataType='string', viewType='popup',
+            viewOptions = {
+                tooltip = "Select 'No' unless you want to cleanse \"foreign\" keywords from file (prior to importing, using exiftool), or remove from photo in catalog (after importing).",
+                items = { { title = "No", value = '', default=true }, { title = "From file", value = 'file' }, { title = "From photo (all)", value = 'photo' }, { title = "From photo (new)", value = 'photoNew' } },
+            },
+        },
+        
+        { id='videoFoldernameSpec', friendly="Video Folder Naming", dataType='proxy', viewType='popup',
+            -- default tooltip: define more via lua-text...
+            init = {
+                { title="Same as Photos", value=nil, default=true },
+                { title="Video Sibling", value=videoFoldernameSpec_videoSibling },
+                { title="Video Child", value=videoFoldernameSpec_videoChild },
+            }
+        },
+
+        { id='videoFilenameSpec', friendly="Video File Naming", dataType='proxy', viewType='popup',
+            -- default tooltip: define more via lua-text...
+            init = {
+                { title="Same as Photos", value=nil, default=true },
+                { title="Distinguish Videos", value=filenameSpec_videoSep },
+            }
+        },
+
+        { id='importProtectedOnly', friendly="Import Protected Only", dataType='boolean', default=false },
+        { id='readOnlyFileAttribute', friendly="Read-only Attribute Handling", dataType='string', viewType='popup',
+            viewOptions = {
+                tooltip = "If plugin decides, it does nothing; if 'Ignore', then handling is same as Lr native. Note: handling will not affect read-only metadata.",
+                items = {
+                    { title="Let Plugin Decide", value='', default=true },
+                    { title="Ignore", value='ignore' },
+                    { title="Preserve", value='preserve' },
+                    { title="Clear", value='clear' },
+                    { title="Set", value='set' },
+                },
+            },
+        },
+        { id='readOnlyPhotoMetadata', friendly="Read-only Metadata", dataType='proxy', viewType='popup',
+            viewOptions = {
+                tooltip = "Pick Status is not supported by Lr3 (only Lr4+)",
+            },
+            init = {
+                { title="None", value=nil, default=true },
+                { title="Set Rating to 1 Star", value={ name="rating", value=1 } },
+                { title="Set Pick Status", value={ name="pickStatus", value=1 } },
+            },
+        },
+        
+        
+        
+        --   A D V A N C E D
+        
+        --{ viewType='separator', title = "Advanced" },
+        { viewType='tab', viewOptions={ title="Advanced", identifier='advanced' } },
+        
+        --[[ *** save as example. works for dev presets, but I don't like:
+        { id='developPresetNames', friendly="Develop Preset Names", dataType='array', viewType='multiList', default='',
+            init={ 'Clear Edit History' },
+            viewOptions = { items=devPresetItems },
+        },
+        --]]
+
+        { id='importMoveToTrash', friendly="Move: to Trash (if possible)", dataType='boolean', default=true },
+        
+        { id='exifToolSession', friendly="Exiftool Session", dataType='boolean', default=true,
+            viewOptions = {
+                tooltip="Required for most folder/file-naming support...",
+            },
+        },
+
+        { id='emulateCameraSettings', friendly="Emulate Camera Settings", dataType='boolean', default=false,
+            viewOptions = {
+                tooltip="You must define handling for your camera before it makes sense to enable this.",
+            },
+        },        
+        
+        { id='convertToDngOptions', friendly="DNG Converter Options", dataType='array', viewType='popup', static=true, whole=true,
+            viewOptions = {
+                tooltip = "blanken for default options; if non-blank, must incluce -cr{version}, e.g. '-dng1.4 -cr7.1 -lossy' (without the apostrophes)",
+                --validate = validateDngConverterOptions,
+            },
+            elem = {
+                { id="enableConv", friendly="Convert to DNG", dataType='boolean', default=false,
+                    viewOptions={
+                        tooltip="check box to enable conversion to DNG",
+                    }
+                },
+                { id="dngOptions", friendly="DNG Converter Options", dataType='string', viewType="dngOptionsChooser", default="",
+                    viewOptions = {
+                        tooltip = "blanken for default options; if non-blank, must incluce -cr{version}, e.g. '-dng1.4 -cr7.1 -lossy' (without the apostrophes)",
+                        validate = validateDngConverterOptions,
+                    },
+                },
+            },
+            init = {
+                { title='Raw', default=true },
+                { title='Jpeg', values={ enableConv=false, dngOptions="" }, },
+                { title='Other', values={ enableConv=false, dngOptions="" }, },
+            },
+        },
+
+        { id='verifyBackupFileContents', friendly="Extra Backup Validation", dataType='boolean', default=nil },
+        { id='verifyImportedFileContents', friendly="Extra Import Validation", dataType='boolean', default=nil },
+
+        -- this is for custom import target folder computation.
+        { id='getImportDestinationSubfolder', friendly="Import Dest Subfolder Method", dataType='proxy', viewType='popup',
+            
+            init = {
+                { title="None", value=nil },
+                { title="Default", value=getImportDestination_default, default=true },
+                --{ title="Custom", value=getImportDestination_custom },
+                --{ title="rc Standard", value=getImportDestination_rcStandard },
+            }
+        },
+
+        -- this is for intelligent filenaming support.
+        { id='getNewFilename', friendly="New Filename Method", dataType='proxy', viewType='popup',
+            -- generic tooltip
+            init = {
+                { title="Default", value=getNewFilename_default, default=true }, -- *** must not be nil, or file will not be renamed.
+                --{ title="Custom", value=getNewFilename_custom },
+                --{ title="rc Standard", value=getNewFilename_rcStandard },
+            }
+        },
+
+        -- Only change this if you want to add intelligence to the assignment of develop presets, otherwise each develop preset defined will be blindly applied to each imported photo.
+        { id='applyDevelopPresets', friendly="Apply Develop Presets Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Apply develop presets - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="None", value=nil, default=true }, -- "None" => no special handling - defined develop presets will still be applied to all photos imported.
+                --{ title="Default", value=applyDevelopPresets_default },
+                --{ title="Custom", value=applyDevelopPresets_custom },
+                --{ title="rc Standard", value=applyDevelopPresets_rcStandard },
+            }
+        },
+            
+        -- Only change this if you want to add intelligence to the assignment of metadata presets, otherwise each preset defined will be blindly applied to each imported photo.
+        { id='applyMetadataPresets', friendly="Apply Metadata Presets Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Apply metadata presets - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="None", value=nil, default=true }, -- "None" => no special handling - defined metadata presets will still be applied to all photos imported.
+                --{ title="Default", value=applyMetadataPresets_default },
+                --{ title="Custom", value=applyMetadataPresets_custom },
+                --{ title="rc Standard", value=applyMetadataPresets_rcStandard },
+            }
+        },
+        
+        -- Only change this if you want to add intelligence to the assignment of keywords, otherwise each keyword defined will be blindly applied to each imported photo.
+        { id='applyKeywords', friendly="Apply Keywords Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="apply keywords - custom function..." },
+            init = {
+                { title="None", value=nil, default=true }, -- "None" => no special handling - defined keywords will still be applied to all photos imported.
+                --{ title="Default", value=applyKeywords_default },
+                --{ title="Custom", value=applyKeywords_custom },
+                --{ title="rc Standard", value=applyKeywords_rcStandard },
+            }
+        },
+            
+        { id='initSession', friendly="Session Init Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Import session initialization - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=initSession_custom, default=true },
+                --{ title="rc Standard", value=initSession_rcStandard },
+                --{ title="Default", value=initSession_default },
+            }
+        },
+        { id='initSource', friendly="Source Init Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Import source initialization - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="None", value=nil, default=true },
+                --{ title="Custom", value=initSource_custom },
+                --{ title="Default", value=initSource_default },
+            }
+        },
+        { id='initPhoto', friendly="Photo Init Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Post-import photo initialization function - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=initPhoto_custom, default=true },
+                { title="Folder Names As Keywords", value=initPhoto_folderNamesAsKeywords }, -- Feel free to comment out this line to hide option in GUI, if not using it.
+                --{ title="rc Standard", value=initPhoto_rcStandard }, -- @2/Jan/2013 rc-standard is same as the default.
+                --{ title="Default", value=initPhoto_default },
+            }
+        },
+        { id='initFile', friendly="File Init Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Pre-import file initialization function - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=initFile_custom, default=true },
+                --{ title="Import Nikon Df Raw Files", value=initFile_NikonDf },
+                --{ title="rc Standard", value=initFile_rcStandard },
+                --{ title="Default", value=initFile_default },
+            }
+        },
+        { id='initTarget', friendly="Target Init Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Target (import destination path) initialization - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=initTarget_custom, default=true },
+                --{ title="Default", value=initTarget_default },
+                --{ title="rc Standard", value=initTarget_rcStandard },
+            }
+        },
+        { id='endPhoto', friendly="Photo Import Finalization Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="End-of-photo-import - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=endPhoto_custom, default=true }, -- seems a little wonky to have custom method be the default instead of default method, but not unprecedented..
+                --{ title="Default", value=endPhoto_default },
+                --{ title="rc Standard", value=endSession_rcStandard },
+            }
+        },
+        { id='endSession', friendly="Session Cleanup Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="End-of-session - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=endSession_custom, default=true },
+                --{ title="Default", value=endSession_default },
+                --{ title="rc Standard", value=endSession_rcStandard },
+            }
+        },
+        { id='grandFinale', friendly="Grand Finale Method", dataType='proxy', viewType='popup',
+            viewOptions={ tooltip="Grand finale - 'Custom' function may not do anything special unless it's been edited." },
+            init = {
+                { title="Custom", value=grandFinale_custom, default=true },
+                --{ title="Default", value=grandFinale_default },
+                --{ title="rc Standard", value=grandFinale_rcStandard },
+            }
+        },
+
+        { id='utcOffsetInSeconds', friendly="UTC Offset", dataType='number', viewType=nil, default=nil, -- warning: nil means local, 0 means utc.
+            viewOptions = {
+                tooltip="Leave this blank for local time, 0 for UTC time (no offset), or enter a non-zero offset in seconds.",
+                precision=0,
+                validate = function( view, value )
+                    return true, value -- nil value is ok too.
+                end,
+            },
+        },
+
+
+        
+        --   D U P L I C A T E   D E T E C T I O N
+        --[=[
+        { viewType='tab', viewOptions={ title="Duplicates", identifier='duplicates' } },
+        
+        { viewType='heading',
+            viewOptions={ title="Catalog-wide duplicate detection:" },
+        },
+        
+        -- deny if duplicate filename (incoming filename matches existing filename):
+        { id='denyIfDupFilename', friendly="Do not import unless filename is unique", dataType='boolean', default=false, -- view-type = default.
+            viewOptions={ tooltip="Compares incoming filename to all current filenames\n \nPS - this feature comes with a slight performance penalty when import is getting underway (how much depends on catalog size), since Ottomanic Importer must load filenames for all photos in the catalog before importing commences, but will assure all filenames in catalog remain unique - a good thing to maintain if you've got it going already, but may be a bad thing if you don't!" },
+        },
+
+        -- or duplicate file:
+        { id='denyIfDupFile', friendly="Do not import if duplicate file", dataType='boolean', default=false, -- view-type = default.
+            viewOptions={ tooltip="Compares some or all of the following criteria to all photos in catalog.\n \nPS - this feature comes with a slight performance penalty when import is getting underway (how much depends on which options are checked, and catalog size), since Ottomanic Importer must initialize requisite metadata for all photos in the catalog before importing commences, but will assure duplicates (as you define them) are not imported." },
+        },
+
+        { viewType='spacer',
+            viewOptions={ height=10 },
+        },
+        
+        { viewType='heading',
+            viewOptions={ title="Duplicate file criteria:" },
+        },
+        
+        { id='dupCritOrigFilename', friendly="Original Filename", dataType='boolean', default=false,
+            viewOptions={ tooltip="If checked, pre-renamed filename of prospective import file must be same as original filename of photo in catalog in order to be considered a duplicate (or current filename matches, if such option is enabled); if unchecked, original filename will not be a determining factor." },
+        },        
+        
+        { id='dupCritCurrFilename', friendly="Current Filename", dataType='boolean', default=false,
+            viewOptions={ tooltip="If checked, pre-renamed filename of prospective import file must be same as current filename of photo in catalog in order to be considered a duplicate (assuming photo failed the original filename check, or there was no such check); if unchecked, current filename will not be a determining factor." },
+        },        
+        
+        { id='dupCritFileType', friendly="Filename Extension", dataType='boolean', default=true, -- ### this criteria should be in relative antics too. (dng-conversion?? ###)
+            viewOptions={ tooltip="If checked, filename extension of prospective import file must be same as filename extension of photo in catalog in order to be considered a duplicate; if unchecked, filename extension will not be a determining factor." },
+        },        
+        
+        { id='dupCritCapTime', friendly="Capture Time", dataType='boolean', default=true,
+            viewOptions={ tooltip="If checked, capture time of prospective import file must be same as photo in catalog in order to be considered a duplicate; if unchecked capture time will not be a determining factor." },
+        },        
+        
+        { id='dupCritFileCreTime', friendly="File Creation Time", dataType='boolean', default=false,
+            viewOptions={ tooltip="If checked, file-creation time of prospective import file must be same as photo in catalog in order to be considered a duplicate; if unchecked file-creation time will not be a determining factor." },
+        },        
+        
+        { id='dupCritFileModTime', friendly="File Modification Time", dataType='boolean', default=false,
+            viewOptions={ tooltip="If checked, file-modification time of prospective import file must be same as photo in catalog in order to be considered a duplicate; if unchecked file-modification time will not be a determining factor." },
+        },        
+        
+        { id='dupCritFileSize', friendly="File Size", dataType='boolean', default=false,
+            viewOptions={ tooltip="If checked, file-size of prospective import file must be same as photo in catalog in order to be considered a duplicate; if unchecked file-size time will not be a determining factor." },
+        },        
+        
+        { id='dupCritCustom', friendly="Custom Criteria", dataType='proxy', viewType='popup', show=true,
+            viewOptions={ tooltip="If checked, custom criteria of prospective import file must match in order to be considered a duplicate; if unchecked custom criteria will not be a determining factor." },
+            init = { -- reminder: view-options--items does not work for proxy popup - reasonable, since function values can't be stored in prefs,
+                -- so items must be created.
+                { title="None", value=nil },
+                { title="Exif Default", value=dupCritExifDefault, default=true },
+            },
+        },        
+        --]=]
+        
+    },
+    init = {
+        { title="Add in Place", default=true },
+        { title="Copy from Cards", values={ importType='Copy', } },
+        { title="Move from Folder", values={ importType='Move', } },
+    }
+}
+
+
+
+--_t[#_t + 1] = { viewType = 'separator' } -- too much.
+_t[#_t + 1] = { viewType = 'spacer', viewOptions={ height = 15 } } -- nice...
+
+
+
+-- Note: accessed thusly:
+-- local key = systemSettings:getKey( 'drives' ) -- relative to root of default settings.
+-- local driveSpecs = systemSettings:getValue( key )
+-- driveSpecs[i].name...
+if WIN_ENV then -- Windows:
+    _t[#_t + 1] = { id='drives', friendly="Card Drives", dataType='array', viewType='popup', whole=true,
+        viewOptions={
+            tooltip = "Define card drives you anticipate having connected to your machine - not required, but convenient.",
+        },
+        elem = {
+            { id='root', friendly="Drive Root", dataType='string', viewType='string', default="Z:" },
+            { id='subfolder', friendly="Image Subfolder", dataType='string', viewType='string', default="DCIM" },
+        },
+        init = {
+            { title="USB Card Reader", default=true },
+            { title="Floppy A", values={ root="A:", subfolder="DCIM" } },
+            { title="Floppy B", values={ root="B:", subfolder="DCIM" } },
+        },
+    }
+else -- Mac:
+    _t[#_t + 1] = { id='drives', friendly="Card Drives", dataType='array', viewType='popup', whole=true,
+        viewOptions={
+            tooltip = "Define card drives you anticipate having connected to your machine - not required, but convenient.",
+        },
+        elem = {
+            { id='root', friendly="Drive Root", dataType='string', viewType='string', default="/Volumes/MyCardDrive" },
+            { id='subfolder', friendly="Image Subfolder", dataType='string', viewType='string', default="DCIM" },
+        },
+        init = {
+            { title="My Card Drive", default=true },
+        },
+    }
+end
+
+
+
+-- Path to dng converter executable file. Theoretically you won't need to edit this, unless you install to a non-default location.
+-- Windows default: C:\Program Files (x86)\Adobe\Adobe DNG Converter.exe
+-- Mac default: /Applications/Adobe DNG Converter.app/Contents/MacOS/Adobe DNG Converter
+-- Example #1 (Windows): _t.dngConverterApp = "D:\\Program Files (x86)\\Adobe\\Adobe DNG Converter.exe" -- program files are on D: drive.
+-- Example #2 (Windows): _t.dngConverterApp = "D:\\Program Files\\Adobe\\Adobe DNG Converter.exe" -- program files are on D: drive, 32-bit OS.
+-- Example #3 (Mac): _t.dngConverterApp = "/Adobe/Applications/Adobe DNG Converter.app/Contents/MacOS/Adobe DNG Converter" -- installed in applications folder on non-system mounted drive.
+-- Example #4: _t.dngConverterApp = nil -- let plugin try to find dng converter in default location.
+_t[#_t + 1] = { id='dngConverterApp', friendly="Adobe DNG Converter", dataType='string', viewType='browsableFile', default="",
+    viewOptions={ tooltip = str:fmtx( "May be left blank unless you plan to convert to DNG, in which case: enter/browse-for path to exe file, if ^1 is not finding in default fashion.", app:getAppName() ) },
+    chooserOptions={ fileTypes = WIN_ENV and "exe" },
+}
+
+
+
+-- Path to exiftool executable file. Theoretically you won't need to edit this, unless you install to a non-default location.
+-- Example #1 (Windows): _t.exifToolApp = "D:\\Programs\\Phil Harvey\\exiftool.exe" -- double-up on the backslashes.
+-- Example #2 (Mac): _t.exifToolApp = "/usr/bin/exiftool"
+-- Example #3: _t.exifToolApp = nil -- let plugin try to find exiftool in default location.
+_t[#_t + 1] = { id='exifToolApp', friendly="ExifTool Executable", dataType='string', viewType='browsableFile', default="",
+    viewOptions={ tooltip = WIN_ENV and "Leave blank for built-in exiftool, or enter/browse-for path to preferred executable." or str:fmtx( "Enter/browse-for path to exiftool executable file, if ^1 is not finding in default fashion.", app:getAppName() ) },
+    chooserOptions={ fileTypes = WIN_ENV and "exe" },
+}
+
+
+
+-- Path to exiftool executable file. Theoretically you won't need to edit this, unless you install to a non-default location.
+-- Example #1 (Windows): _t.exifToolApp = "D:\\Programs\\Phil Harvey\\exiftool.exe" -- double-up on the backslashes.
+-- Example #2 (Mac): _t.exifToolApp = "/usr/bin/exiftool"
+-- Example #3: _t.exifToolApp = nil -- let plugin try to find exiftool in default location.
+_t[#_t + 1] = { id='convertApp', friendly="ImageMagick Convert", dataType='string', viewType='browsableFile', default="",
+    viewOptions={ tooltip = str:fmtx( "Enter/browse-for path to ImageMagick's convert (executable) file. Reminder: not needed/used except for importing gifs as png..." ) },
+    chooserOptions={ fileTypes = WIN_ENV and "exe" },
+}
+
+
+
+-- reduce thumbnail height if you have a smaller monitor
+_t[#_t + 1] = { id='sampleThumbHeight', friendly="Sample Thumbnail Height", dataType='number', default=200,
+    viewOptions={ tooltip = str:fmtx( "I recommend 200-300 if you have the space, but if you don't have enough room on your monitor, you can reduce it down to 100 or so.." ),
+        precision=0,
+        min=100,
+        max=300,
+    },
+}
+
+
+
+-- reduce summary lines if you have a smaller monitor
+_t[#_t + 1] = { id='summaryLines', friendly="Summary Lines", dataType='number', default=10,
+    viewOptions={ tooltip = str:fmtx( "I recommend 10-15 if you have the space (20 if you have a lot of different sources), but if you don't have enough room on your monitor, you can reduce it down to 5 or so.." ),
+        precision=0,
+        min=5,
+        max=20,
+    },
+}
+
+
+
+-- Use modal dialog box for hide/unhide/report feature (dunno why you'd want to, but hey..).
+_t[#_t + 1] = { id='modal', friendly="Hide/Unhide/Report dialog box - modal", dataType='boolean', default=false,
+    viewOptions={ tooltip = str:fmtx( "Leave un-checked for non-modal, i.e. \"floating\" dialog box (recommended), or check box for old-school modal.." ) },
+}
+
+
+
+_t[#_t + 1] = { id='useNewFilenameNumberParsing', friendly="Use New Filename Image Number Parsing", dataType='boolean', default=false,
+    viewOptions={ tooltip = str:fmtx( "New filename number parsing is better, but won't always yield same result as before.\n \n*** Be sure to set the minimum and maximum below.." ) },
+}
+_t[#_t + 1] = { id='filenameNumMinLen', friendly="Filename Number - Minimum Length", dataType='number', default=4,
+    viewOptions={ tooltip = str:fmtx( "Assures valid filename number has at least this many digits - zero means \"no minimum\". Set this to 4 for standard card image number parsing, or 3 to accept 3-digit sequence number as image number...\n \n*** Not applicable unless 'Use New Filename Image Number Parsing' is enabled." ),
+        precision=0,
+        min = 0,
+        max = 99,
+        width_in_digits = 2, -- this does nothing since (shared) width defined by other fields, still..
+    },
+}
+_t[#_t + 1] = { id='filenameNumMaxLen', friendly="Filename Number - Maximum Length", dataType='number', default=7,
+    viewOptions={ tooltip = str:fmtx( "Assures valid filename number has at most this many digits - zero means \"no maximum\". Set this to same non-zero value as minimum if you know exactly how long the image numbers will be, or make it larger than minimum if image number length could vary.\n \n*** Not applicable unless 'Use New Filename Image Number Parsing' is enabled." ),
+        precision=0,
+        min = 0,
+        max = 99,
+        width_in_digits = 2, -- this does nothing since (shared) width defined by other fields, still..
+    },
+}
+_t[#_t + 1] = { id='filenameNumAtFront', friendly="Filename Number - Expect at front of filename", dataType='boolean', default=false,
+    viewOptions={ tooltip = str:fmtx( "By default, algorithm looks for filename number staring near the tail end (where the filename extension is). If you check this box, algorithm will look for filename number starting at the front/left end." ) },
+}
+
+
+
+_t[#_t + 1] = { id='autoMirrorFolderDefs', friendly="Define auto-mirrored folders", dataType='array', whole=true,
+    viewOptions={
+        tooltip = "Leave blank to include all folders in catalog. Or, define folders to be auto-mirrored - start by selecting 'New' and enter any preset name.\n \n*** These are ignored unless 'Auto-mirror Folders' box is ticked in Ottomanic Importer Settings (plugin manager).",
+    },
+    elem = {
+        { id='folderDefEna', friendly="Enable These Include/Exclude Settings", dataType='boolean', default=true,
+            viewOptions = { tooltip="Uncheck so you can temporarily disable this definition. If you want to permanently disable it - just delete it ;-}." },
+        },
+        { id='inclFolderSubstr', friendly="Include Folders", dataType='string', default="",
+            viewOptions = { tooltip="Leave blank to include all, or enter folder path substring - case sensitive." },
+        },
+        { id='inclFolderRegex', friendly="Interpret as regex", dataType='boolean', default=false,
+            viewOptions = { tooltip="Interpret 'Include Folders' substring as lua \"pattern\" (regular expression)." },
+        },
+        { id='exclFolderSubstr', friendly="Exclude Folders", dataType='string', default="",
+            viewOptions = { tooltip="Leave blank to exclude none, or enter foler path substring - case sensitive." },
+        },
+        { id='exclFolderRegex', friendly="Interpret as regex", dataType='boolean', default=false,
+            viewOptions = { tooltip="Interpret 'Exclude Folders' substring as lua \"pattern\" (regular expression)." },
+        },
+    },
+    init = {
+        { title = "Experimental - if unedited (all blank) all folders included.", values={ folderDefEna=false, inclFolderSubstr="", inclFolderRegex=false, exclFolderSubstr="", exclFolderRegex=false }, default=true },
+    },
+}
+
+
+
+_t[#_t + 1] = { id='dirChgAppVerbose', friendly="Start Dir/File Change Notifier App in Verbose Mode", dataType='boolean', default=false,
+    viewOptions={ tooltip="App starts & stops as needed - no need for manual control, but if you want to see a little deeper in (from the beginning) - enable verbose mode." },
+}
+
+
+
+--[[
+        *** Instructions: change this to 'true' (without the apostrophes) if you are using Lr5+ and there are errors reading metadata the new way (the default way).
+        
+        Examples (applies ONLY to Lr5, maybe Lr6 if SDK not robustened..):
+            _t.readMetadataTheOldWay = nil      -- let plugin decide, as-of 28/Aug/2014 13:54, it will decide to read metadata the new way.
+            _t.readMetadataTheOldWay = false    -- assure metadata is read the new way (using new Lr5 read-metadata method).
+            _t.readMetadataTheOldWay = true     -- assure metadata is read the old way - errors are occurring using the new way (e.g. performCommandDesc...).
+--]]
+_t.readMetadataTheOldWay = nil
+
+
+
+-- return config table
+return _t
